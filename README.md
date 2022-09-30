@@ -1,1 +1,1 @@
-# 2022-Honors-Thesis
+# 2022 Honors Thesis
