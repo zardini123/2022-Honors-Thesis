@@ -34,17 +34,29 @@ def add_object(self, context):
     edges = []
     faces = [[0, 1, 2, 3]]
 
-    mesh1 = bpy.data.meshes.new(name="Mesh 1")
-    mesh2 = bpy.data.meshes.new(name="Mesh 2")
+    control_mesh = bpy.data.meshes.new(name="Bézier Control Mesh")
+    output_mesh = bpy.data.meshes.new(name="Bézier Output Mesh")
 
-    # https://docs.blender.org/api/current/bpy.types.Mesh.html#bpy.types.Mesh.from_pydata
-    mesh1.from_pydata(verts, edges, faces)
-    mesh2.from_pydata(verts, edges, faces)
+    # from_pydata:
+    #   https://docs.blender.org/api/current/bpy.types.Mesh.html#bpy.types.Mesh.from_pydata
+    control_mesh.from_pydata(verts, edges, faces)
 
     # useful for development when the mesh may be invalid.
     # mesh.validate(verbose=True)
-    object_data_add(context, mesh1, operator=self)
-    object_data_add(context, mesh2, operator=self)
+    # object_data_add:
+    #   https://docs.blender.org/api/current/bpy_extras.object_utils.html#bpy_extras.object_utils.object_data_add
+    created_control_grid = object_data_add(context, control_mesh, operator=self, name="Bézier Surface")
+    created_output_object = object_data_add(context, output_mesh, operator=self, name="Bézier Output Mesh")
+
+    created_output_object.parent = created_control_grid
+
+    # Used Python tooltip feature of Blender UI to determine these API calls
+    created_control_grid.display.show_shadows = False
+    created_control_grid.show_wire = True
+    created_control_grid.display_type = 'WIRE'
+    created_control_grid.hide_render = True
+
+    created_output_object.hide_select = True
 
 
 class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
