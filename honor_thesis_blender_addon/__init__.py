@@ -21,6 +21,7 @@ bl_info = {
     "category": "Mesh",
 }
 
+
 def add_object(self, context):
     scale_x = self.scale.x
     scale_y = self.scale.y
@@ -42,7 +43,6 @@ def add_object(self, context):
 
             vertex = Vector((x_pos * scale_x, y_pos * scale_y, 0))
             verticies.append(vertex)
-
 
     edges = []
 
@@ -79,8 +79,10 @@ def add_object(self, context):
     # mesh.validate(verbose=True)
     # object_data_add:
     #   https://docs.blender.org/api/current/bpy_extras.object_utils.html#bpy_extras.object_utils.object_data_add
-    created_control_grid = object_data_add(context, control_mesh, operator=self, name="Bézier Surface")
-    created_output_object = object_data_add(context, output_mesh, operator=self, name="Bézier Output Object")
+    created_control_grid = object_data_add(
+        context, control_mesh, operator=self, name="Bézier Surface")
+    created_output_object = object_data_add(
+        context, output_mesh, operator=self, name="Bézier Output Object")
 
     created_output_object.parent = created_control_grid
 
@@ -110,50 +112,29 @@ class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
         add_object(self, context)
         return {'FINISHED'}
 
-# def vertex_position(vertex):
-#     return (vertex.co.x, vertex.co.y, vertex.co.z)
-#
-# def signed_area(face):
-#     # Source: https://stackoverflow.com/a/10298685/6183001
-#     out_signed_area = 0
-#     for vertex in face.verts:
-#         x, y, z = vertex_position(vertex)
-#
-#         if point is last point
-#             x2 = firstPoint[0]
-#             y2 = firstPoint[1]
-#         else
-#             x2 = nextPoint[0]
-#             y2 = nextPoint[1]
-#         end if
-#
-#         signedArea += (x1 * y2 - x2 * y1)
-#     end for
-#
-#     return out_signed_area / 2
 
-def traverse_half_quad(start_loop):
-    # https://devtalk.blender.org/t/walking-edge-loops-across-a-mesh-from-c-to-python/14297/4
+def edge_is_sharp(edge):
+    return not edge.smooth
 
-    return
 
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_replace: bpy.types.Mesh):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
 
-    # Find patch of 3x3 quads with 16 verticies in control_bmesh defined by a sharp border
-
-    unvisited_faces = set(control_bmesh.faces)
+    # print("start\n")
 
     patches = []
+
+    # Find patch of 3x3 quads with 16 verticies in control_bmesh defined by a sharp border
+    unvisited_faces = set(control_bmesh.faces)
 
     while len(unvisited_faces) != 0:
         # Start at random face
         start_face = unvisited_faces.pop()
 
-        patch = []
-
         patch_faces = set()
         patch_corner_verticies = set()
+        patch_corner_faces = set()
+        patch_sharp_verticies = set()
 
         faces_queue = set()
         faces_queue.add(start_face)
@@ -174,29 +155,36 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
             if len(patch_faces) > 9:
                 break
 
-            sharp_corner_verticies = None
+            temp_patch_corner_verticies = None
 
             non_sharp_edges = []
+            sharp_edges = []
             for edge in current_face.edges:
                 if edge.smooth:
                     # Add to queue non-sharp edges of face
                     non_sharp_edges.append(edge)
                 else:
-                    sharp_verticies = set(vertex for vertex in edge.verts)
+                    sharp_edges.append(edge)
 
-                    if sharp_corner_verticies is None:
-                        sharp_corner_verticies = sharp_verticies
+                    sharp_verticies = set(vertex for vertex in edge.verts)
+                    patch_sharp_verticies = patch_sharp_verticies.union(sharp_verticies)
+
+                    # Get verticies shared between sharp edges in face
+                    if temp_patch_corner_verticies is None:
+                        temp_patch_corner_verticies = sharp_verticies
                     else:
-                        sharp_corner_verticies = sharp_corner_verticies.intersection(sharp_verticies)
+                        temp_patch_corner_verticies = temp_patch_corner_verticies.intersection(
+                            sharp_verticies)
 
             if len(non_sharp_edges) == 4:
                 num_non_sharp_faces += 1
 
-            # print(sharp_corner_verticies)
-
             if len(non_sharp_edges) == 2:
                 # Should only be 1 corner vertex in corners of 3x3 patch
-                patch_corner_verticies.add(sharp_corner_verticies.pop())
+                if temp_patch_corner_verticies is not None and len(temp_patch_corner_verticies) > 0:
+                    patch_corner_verticies.add(temp_patch_corner_verticies.pop())
+
+                patch_corner_faces.add(current_face)
 
             # Acquire linked faces to traverse next
             for non_sharp_edge in non_sharp_edges:
@@ -205,11 +193,10 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
                     if link_face not in patch_faces:
                         faces_queue.add(link_face)
 
+        # Condition for valid patch boundary
         if len(patch_faces) == 9 and num_non_sharp_faces == 1:
             # Valid patch boundary
-            print("valid")
-
-            print(len(patch_corner_verticies))
+            # print("\n\n\nvalid")
 
             # Get set of all unique verticies for this patch
             # patch_verticies = set()
@@ -219,54 +206,83 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
             #
             # print(len(patch_verticies))
 
-            # Start at arbitrary corner
-            #   Traverse sharp edge of patch until hit another corner vertex
-            #   Store other sharp edge vertex as next start
-            #   Add faces to visited faces
+            verticies = [[None] * 4 for _ in range(4)]
 
-            # Use start
-            #   Exit if start is another corner
-            #   Store next sharp vertex as next start
-            #
-            #   For all, ignore verticies in visited faces
-            #   For one step, traverse edge that's not sharp at new start
-            #
-            #   Traverse edge that is not part of last traversed face
-            #   For rest of steps until hit vertex with sharp edge:
+            # Secondary edge is horizontal, start of vertical traversal
+            primary_sharp = None
+            secondary_sharp = None
 
-            # Use start
-            #   Traverse sharp edge that was not last traveled until hit
-            #       another corner vertex
+            # Choose starting corner based on order of sharp edges around the
+            #   loop
+            # Loops seem to go counter-clockwise
+            for corner_face in patch_corner_faces:
+                primary_sharp = None
+                secondary_sharp = None
+                good = True
 
-            # For quads, Traversal of 2 loops acquires the edge opposite to
-            #   start loop regardless of direction of loop.
+                loop_index = 0
+                for loop in corner_face.loops:
+                    good = False
 
-            
+                    if loop_index == 0 and edge_is_sharp(loop.edge):
+                        secondary_sharp = loop
+                        good = True
+                    elif loop_index == 1 and edge_is_sharp(loop.edge):
+                        primary_sharp = loop
+                        good = True
+                    elif loop_index == 2 and not edge_is_sharp(loop.edge):
+                        good = True
+                    elif loop_index == 3 and not edge_is_sharp(loop.edge):
+                        good = True
 
-            # start_face, non_sharp_edges = set_of_corner_edges
-            #
-            # primary_edge = non_sharp_edges[0]
-            # primary_loop = None
-            # secondary_edge = non_sharp_edges[1]
-            # secondary_loop = None
+                    if not good:
+                        break
 
-            # Find loops associated with primary/secondary edge
-            # for loop in start_face.loops:
-            #     if loop.edge is primary_edge:
-            #         primary_loop = loop
-            #     elif loop.edge is secondary_edge:
-            #         secondary_loop = loop
+                    loop_index += 1
 
-            # 1. Traverse primary edge ring until hit sharp edge
+                # Found a good corner
+                if good:
+                    break
 
-            # 2. Traverse secondary edge ring until hit sharp edge
+            # Build 2D table of verticies by doing a edge ring traversal
+            #   for every edge in the orthogonal
+            #       (wrong word as direction between edges can be skewed)
+            #   edge ring traversal
+            start_loop = secondary_sharp
+            for secondary_edge_num in range(0, 3):
+                start_loop = start_loop.link_loop_next
 
-            # 1. Start at one edge of a corner, traverse edge ring while
-            #   storing each sharp edge.  This will define the the "u" border
-            #   verticies.
-            # 2. Start at the other edge of the corner, traverse edge ring
-            #   while storing each sharp edge.  This will define the the "u"
-            #   border verticies.
+                # print("aaa")
+                # print(start_loop.edge.index)
+                # print("begin")
+
+                loop = start_loop
+
+                # print(loop.vert.index)
+
+                for edge_num in range(0, 3):
+                    for loop_num in range(0, 2):
+                        # [y][x]
+                        y = edge_num
+                        x = secondary_edge_num + loop_num
+                        verticies[y][x] = loop.vert
+
+                        loop = loop.link_loop_next
+
+                    if edge_num != 2:
+                        loop = next(iter(loop.link_loops))
+                    else:
+                        verticies[3][secondary_edge_num + 1] = loop.vert
+                        loop = loop.link_loop_next
+
+                verticies[3][secondary_edge_num] = loop.vert
+
+                start_loop = start_loop.link_loop_next
+
+                if secondary_edge_num != 2:
+                    start_loop = next(iter(start_loop.link_loops))
+
+            patches.append(verticies)
 
         unvisited_faces = unvisited_faces.difference(patch_faces)
 
@@ -274,9 +290,12 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
     output_bmesh = bmesh.new()
     output_bmesh.from_mesh(output_mesh_to_replace)
 
+    print(patches)
+
     # Replace output mesh with newly generated one
     output_bmesh.to_mesh(output_mesh_to_replace)
     output_bmesh.free()
+
 
 def cb_scene_update(scene):
     edit_obj = bpy.context.edit_object
@@ -295,6 +314,7 @@ def cb_scene_update(scene):
             output_mesh = output_object.data
 
             create_and_replace_output_mesh(control_mesh, output_mesh)
+
 
 def add_bezier_surface_button(self, context):
     self.layout.operator(
@@ -331,3 +351,49 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+#   Traverse sharp edge of patch until hit another corner vertex
+#   Store other sharp edge vertex as next start
+#   Add faces to visited faces
+
+# Use start
+#   Exit if start is another corner
+#   Store next sharp vertex as next start
+#
+#   For all, ignore verticies in visited faces
+#   For one step, traverse edge that's not sharp at new start
+#
+#   Traverse edge that is not part of last traversed face
+#   For rest of steps until hit vertex with sharp edge:
+
+# Use start
+#   Traverse sharp edge that was not last traveled until hit
+#       another corner vertex
+
+# For quads, Traversal of 2 loops acquires the edge opposite to
+#   start loop regardless of direction of loop.
+
+# start_face, non_sharp_edges = set_of_corner_edges
+#
+# primary_edge = non_sharp_edges[0]
+# primary_loop = None
+# secondary_edge = non_sharp_edges[1]
+# secondary_loop = None
+
+# Find loops associated with primary/secondary edge
+# for loop in start_face.loops:
+#     if loop.edge is primary_edge:
+#         primary_loop = loop
+#     elif loop.edge is secondary_edge:
+#         secondary_loop = loop
+
+# 1. Traverse primary edge ring until hit sharp edge
+
+# 2. Traverse secondary edge ring until hit sharp edge
+
+# 1. Start at one edge of a corner, traverse edge ring while
+#   storing each sharp edge.  This will define the the "u" border
+#   verticies.
+# 2. Start at the other edge of the corner, traverse edge ring
+#   while storing each sharp edge.  This will define the the "u"
+#   border verticies.
