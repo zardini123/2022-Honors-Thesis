@@ -110,10 +110,35 @@ class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
         add_object(self, context)
         return {'FINISHED'}
 
+# def vertex_position(vertex):
+#     return (vertex.co.x, vertex.co.y, vertex.co.z)
+#
+# def signed_area(face):
+#     # Source: https://stackoverflow.com/a/10298685/6183001
+#     out_signed_area = 0
+#     for vertex in face.verts:
+#         x, y, z = vertex_position(vertex)
+#
+#         if point is last point
+#             x2 = firstPoint[0]
+#             y2 = firstPoint[1]
+#         else
+#             x2 = nextPoint[0]
+#             y2 = nextPoint[1]
+#         end if
+#
+#         signedArea += (x1 * y2 - x2 * y1)
+#     end for
+#
+#     return out_signed_area / 2
+
+def traverse_half_quad(start_loop):
+    # https://devtalk.blender.org/t/walking-edge-loops-across-a-mesh-from-c-to-python/14297/4
+
+    return
+
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_replace: bpy.types.Mesh):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
-
-    print(control_bmesh)
 
     # Find patch of 3x3 quads with 16 verticies in control_bmesh defined by a sharp border
 
@@ -127,51 +152,114 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
 
         patch = []
 
-        visited_faces = set()
+        patch_faces = set()
+        patch_corner_verticies = set()
+
         faces_queue = set()
         faces_queue.add(start_face)
 
         num_non_sharp_faces = 0
-        set_of_corner_edges = None
 
         while len(faces_queue) != 0:
             current_face = faces_queue.pop()
 
-            # Traversal for edge boundary hit non-quad
+            # If traversal for edge boundary hit non-quad, then this is not a
+            #   3x3 patch
             if len(current_face.verts) != 4:
                 break
 
-            visited_faces.add(current_face)
+            patch_faces.add(current_face)
 
             # If traversal has hit more than 9 quads, then this not a 3x3 patch
-            if len(visited_faces) > 9:
+            if len(patch_faces) > 9:
                 break
 
-            # Find non-sharp edges of face
+            sharp_corner_verticies = None
+
             non_sharp_edges = []
             for edge in current_face.edges:
                 if edge.smooth:
+                    # Add to queue non-sharp edges of face
                     non_sharp_edges.append(edge)
+                else:
+                    sharp_verticies = set(vertex for vertex in edge.verts)
+
+                    if sharp_corner_verticies is None:
+                        sharp_corner_verticies = sharp_verticies
+                    else:
+                        sharp_corner_verticies = sharp_corner_verticies.intersection(sharp_verticies)
 
             if len(non_sharp_edges) == 4:
                 num_non_sharp_faces += 1
 
-            if len(non_sharp_edges) == 2 and set_of_corner_edges is None:
-                set_of_corner_edges = (current_face, non_sharp_edges)
+            # print(sharp_corner_verticies)
+
+            if len(non_sharp_edges) == 2:
+                # Should only be 1 corner vertex in corners of 3x3 patch
+                patch_corner_verticies.add(sharp_corner_verticies.pop())
 
             # Acquire linked faces to traverse next
             for non_sharp_edge in non_sharp_edges:
                 for link_face in non_sharp_edge.link_faces:
                     # Do not visit already visited faces
-                    if link_face not in visited_faces:
+                    if link_face not in patch_faces:
                         faces_queue.add(link_face)
 
-        if len(visited_faces) == 9 and num_non_sharp_faces == 1:
+        if len(patch_faces) == 9 and num_non_sharp_faces == 1:
             # Valid patch boundary
             print("valid")
 
+            print(len(patch_corner_verticies))
+
+            # Get set of all unique verticies for this patch
+            # patch_verticies = set()
+            # for face in patch_faces:
+            #     for vertex in face.verts:
+            #         patch_verticies.add(vertex)
+            #
+            # print(len(patch_verticies))
+
+            # Start at arbitrary corner
+            #   Traverse sharp edge of patch until hit another corner vertex
+            #   Store other sharp edge vertex as next start
+            #   Add faces to visited faces
+
+            # Use start
+            #   Exit if start is another corner
+            #   Store next sharp vertex as next start
+            #
+            #   For all, ignore verticies in visited faces
+            #   For one step, traverse edge that's not sharp at new start
+            #
+            #   Traverse edge that is not part of last traversed face
+            #   For rest of steps until hit vertex with sharp edge:
+
+            # Use start
+            #   Traverse sharp edge that was not last traveled until hit
+            #       another corner vertex
+
             # For quads, Traversal of 2 loops acquires the edge opposite to
             #   start loop regardless of direction of loop.
+
+            
+
+            # start_face, non_sharp_edges = set_of_corner_edges
+            #
+            # primary_edge = non_sharp_edges[0]
+            # primary_loop = None
+            # secondary_edge = non_sharp_edges[1]
+            # secondary_loop = None
+
+            # Find loops associated with primary/secondary edge
+            # for loop in start_face.loops:
+            #     if loop.edge is primary_edge:
+            #         primary_loop = loop
+            #     elif loop.edge is secondary_edge:
+            #         secondary_loop = loop
+
+            # 1. Traverse primary edge ring until hit sharp edge
+
+            # 2. Traverse secondary edge ring until hit sharp edge
 
             # 1. Start at one edge of a corner, traverse edge ring while
             #   storing each sharp edge.  This will define the the "u" border
@@ -180,7 +268,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
             #   while storing each sharp edge.  This will define the the "u"
             #   border verticies.
 
-        unvisited_faces = unvisited_faces.difference(visited_faces)
+        unvisited_faces = unvisited_faces.difference(patch_faces)
 
     # Create new output mesh
     output_bmesh = bmesh.new()
