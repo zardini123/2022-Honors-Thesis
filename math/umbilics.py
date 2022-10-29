@@ -18,10 +18,11 @@ import sympy.vector
 
 
 def bernstein_polynomial(degree, index, parameter):
-    # Args: n, k
+    # Binomial args: sympy.binomial(n, k)
     return sympy.binomial(degree, index) \
         * (parameter ** index) \
         * ((1 - parameter) ** (degree - index))
+
 
 def main() -> int:
 
@@ -48,8 +49,8 @@ def main() -> int:
     points = [
         [
             (coord_sys.i * point_component_scalar_symbols[j][i][0]
-            + coord_sys.j * point_component_scalar_symbols[j][i][1]
-            + coord_sys.k * point_component_scalar_symbols[j][i][2])
+             + coord_sys.j * point_component_scalar_symbols[j][i][1]
+             + coord_sys.k * point_component_scalar_symbols[j][i][2])
             for i in range(u_num_control_points)
         ] for j in range(v_num_control_points)
     ]
@@ -186,6 +187,7 @@ def main() -> int:
     # print(sympy.simplify(L))
 
     return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())

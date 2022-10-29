@@ -1,5 +1,8 @@
 """2022 Honors Thesis Blender Addon."""
 
+import math
+import typing
+
 import bpy
 import bmesh
 from bpy.types import Operator
@@ -22,14 +25,11 @@ bl_info = {
 }
 
 
-def add_object(self, context):
-    scale_x = self.scale.x
-    scale_y = self.scale.y
-
-    # Generate subdivided axis-aligned plane
-    u_num_control_points = 4
-    v_num_control_points = 4
-
+def grid_mesh(
+        generator_function: typing.Callable[[float, float], Vector],
+        u_num_control_points,
+        v_num_control_points
+):
     verticies = []
 
     for y_control_point in range(v_num_control_points):
@@ -38,13 +38,8 @@ def add_object(self, context):
             u = x_control_point / (u_num_control_points - 1)
             v = y_control_point / (v_num_control_points - 1)
 
-            x_pos = (u * 2) - 1
-            y_pos = (v * 2) - 1
-
-            vertex = Vector((x_pos * scale_x, y_pos * scale_y, 0))
+            vertex = generator_function(u, v)
             verticies.append(vertex)
-
-    edges = []
 
     faces = []
 
@@ -66,10 +61,27 @@ def add_object(self, context):
 
             faces.append(loop_cycle)
 
+    return (verticies, faces)
+
+
+def add_object(self, context):
+    scale_x = self.scale.x
+    scale_y = self.scale.y
+
+    def generator_function(u, v):
+        x_pos = (u * 2) - 1
+        y_pos = (v * 2) - 1
+
+        return Vector((x_pos * scale_x, y_pos * scale_y, 0))
+
+    verticies, faces = grid_mesh(generator_function, 4, 4)
+
     control_mesh = bpy.data.meshes.new(name="Bézier Control Mesh")
 
     # output_mesh will not be populated with anything (blank mesh)
     output_mesh = bpy.data.meshes.new(name="Bézier Output Mesh")
+
+    edges = []
 
     # from_pydata:
     #   https://docs.blender.org/api/current/bpy.types.Mesh.html#bpy.types.Mesh.from_pydata
@@ -115,6 +127,49 @@ class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
 
 def edge_is_sharp(edge):
     return not edge.smooth
+
+
+def bernstein_polynomial(degree, index, parameter):
+    # Binomial args: math.comb(n, k)
+    return math.comb(degree, index) \
+        * (parameter ** index) \
+        * ((1 - parameter) ** (degree - index))
+
+
+def bezier_surface_at_parameters(control_points, u, v):
+    """Equation sourced from: https://en.wikipedia.org/wiki/Bézier_surface"""
+
+    u_num_control_points = len(control_points[0])
+    v_num_control_points = len(control_points)
+
+    u_degree = u_num_control_points - 1
+    v_degree = v_num_control_points - 1
+
+    output_point = None
+    weight_sum = 0
+    for i in range(u_degree + 1):
+        for j in range(v_degree + 1):
+            b_u = bernstein_polynomial(u_degree, i, u)
+            b_v = bernstein_polynomial(v_degree, j, v)
+            weight = b_u * b_v
+
+            weight_sum += weight
+
+            addition_expr = weight * control_points[j][i]
+
+            if output_point is None:
+                output_point = addition_expr
+            else:
+                output_point += addition_expr
+
+    # Partition of Unity property: https://pages.mtu.edu/~shene/COURSES/cs3621/NOTES/surface/bezier-properties.html
+    assert abs(weight_sum - 1) <= 0.00000001
+
+    return output_point
+
+
+def add_value_to_array(array, value):
+    return [element + value for element in array]
 
 
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_replace: bpy.types.Mesh):
@@ -265,17 +320,17 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
                         # [y][x]
                         y = edge_num
                         x = secondary_edge_num + loop_num
-                        verticies[y][x] = loop.vert
+                        verticies[y][x] = loop.vert.co
 
                         loop = loop.link_loop_next
 
                     if edge_num != 2:
                         loop = next(iter(loop.link_loops))
                     else:
-                        verticies[3][secondary_edge_num + 1] = loop.vert
+                        verticies[3][secondary_edge_num + 1] = loop.vert.co
                         loop = loop.link_loop_next
 
-                verticies[3][secondary_edge_num] = loop.vert
+                verticies[3][secondary_edge_num] = loop.vert.co
 
                 start_loop = start_loop.link_loop_next
 
@@ -287,14 +342,58 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_
         unvisited_faces = unvisited_faces.difference(patch_faces)
 
     # Create new output mesh
-    output_bmesh = bmesh.new()
-    output_bmesh.from_mesh(output_mesh_to_replace)
+    # output_bmesh = bmesh.new()
+    # output_bmesh.from_mesh(output_mesh_to_replace)
+    # output_bmesh.clear()
 
-    print(patches)
+    # print(output_bmesh)
+
+    # Hot to create vertices
+    # vertex1 = output_bmesh.verts.new((0.0, 0.0, 3.0))
+    # vertex2 = output_bmesh.verts.new((2.0, 0.0, 3.0))
+    # vertex3 = output_bmesh.verts.new((2.0, 2.0, 3.0))
+    # vertex4 = output_bmesh.verts.new((0.0, 2.0, 3.0))
+
+    # Initialize the index values of this sequence.
+    # output_bmesh.verts.index_update()
+
+    # How to create edges
+    # output_bmesh.edges.new((vertex1, vertex2))
+    # output_bmesh.edges.new((vertex2, vertex3))
+    # output_bmesh.edges.new((vertex3, vertex4))
+    # output_bmesh.edges.new((vertex4, vertex1))
+
+    # How to create a face
+    # it's not necessary to create the edges before, I made it only to show how create
+    # edges too
+    # output_bmesh.faces.new((vertex1, vertex2, vertex3, vertex4))
 
     # Replace output mesh with newly generated one
-    output_bmesh.to_mesh(output_mesh_to_replace)
-    output_bmesh.free()
+    # output_bmesh.to_mesh(output_mesh_to_replace)
+    # output_bmesh.free()
+
+    verticies = []
+    faces = []
+
+    for patch_control_points in patches:
+
+        print("\n\nAAAA")
+
+        def generator_function(u, v):
+            return bezier_surface_at_parameters(patch_control_points, u, v)
+
+        patch_verticies, patch_faces = grid_mesh(generator_function, 20, 20)
+
+        for face_index, _ in enumerate(patch_faces):
+            patch_faces[face_index] = add_value_to_array(
+                patch_faces[face_index], len(verticies))
+
+        verticies += patch_verticies
+        faces += patch_faces
+
+    edges = []
+    output_mesh_to_replace.clear_geometry()
+    output_mesh_to_replace.from_pydata(verticies, edges, faces)
 
 
 def cb_scene_update(scene):
