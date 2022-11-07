@@ -2,13 +2,30 @@
 
 import math
 import typing
+import datetime
+
+import numpy
 
 import bpy
 import bmesh
 from bpy.types import Operator
 from bpy.props import FloatVectorProperty
 from bpy_extras.object_utils import AddObjectHelper, object_data_add
-from mathutils import Vector
+
+import mathutils
+
+# "Multi files to addon":
+#   https://blender.stackexchange.com/a/202672/76575
+# "Blender won't import my custom module, ImportError: No module named mymodule"
+#   https://blender.stackexchange.com/a/42192/76575
+import importlib
+if 'utilities' in globals():
+    importlib.reload(utilities)
+if 'imported_math_from_sympy' in globals():
+    importlib.reload(imported_math_from_sympy)
+
+from . import utilities
+from . import imported_math_from_sympy
 
 bl_info = {
     "name": "2022 Honors Thesis",
@@ -25,45 +42,6 @@ bl_info = {
 }
 
 
-def grid_mesh(
-        generator_function: typing.Callable[[float, float], Vector],
-        u_num_control_points,
-        v_num_control_points
-):
-    verticies = []
-
-    for y_control_point in range(v_num_control_points):
-        # Iterate over each u row
-        for x_control_point in range(u_num_control_points):
-            u = x_control_point / (u_num_control_points - 1)
-            v = y_control_point / (v_num_control_points - 1)
-
-            vertex = generator_function(u, v)
-            verticies.append(vertex)
-
-    faces = []
-
-    num_faces_u = u_num_control_points - 1
-    num_faces_v = v_num_control_points - 1
-
-    for face_v in range(num_faces_v):
-        for face_u in range(num_faces_u):
-            current_row_offset = face_v * u_num_control_points
-            next_row_offset = current_row_offset + u_num_control_points
-            current_x_pos = face_u
-
-            loop_cycle = [
-                current_row_offset + current_x_pos,
-                current_row_offset + current_x_pos + 1,
-                next_row_offset + current_x_pos + 1,
-                next_row_offset + current_x_pos
-            ]
-
-            faces.append(loop_cycle)
-
-    return (verticies, faces)
-
-
 def add_object(self, context):
     scale_x = self.scale.x
     scale_y = self.scale.y
@@ -72,11 +50,11 @@ def add_object(self, context):
         x_pos = (u * 2) - 1
         y_pos = (v * 2) - 1
 
-        return Vector((x_pos * scale_x, y_pos * scale_y, 0))
+        return mathutils.Vector((x_pos * scale_x, y_pos * scale_y, 0))
 
-    verticies, faces = grid_mesh(generator_function, 4, 4)
+    verticies, faces = utilities.grid_mesh(generator_function, 4, 4)
 
-    control_mesh = bpy.data.meshes.new(name="Bézier Control Mesh")
+    control_grid_mesh = bpy.data.meshes.new(name="Bézier Control Mesh")
 
     # output_mesh will not be populated with anything (blank mesh)
     output_mesh = bpy.data.meshes.new(name="Bézier Output Mesh")
@@ -85,17 +63,30 @@ def add_object(self, context):
 
     # from_pydata:
     #   https://docs.blender.org/api/current/bpy.types.Mesh.html#bpy.types.Mesh.from_pydata
-    control_mesh.from_pydata(verticies, edges, faces)
+    control_grid_mesh.from_pydata(verticies, edges, faces)
 
     # useful for development when the mesh may be invalid.
     # mesh.validate(verbose=True)
     # object_data_add:
     #   https://docs.blender.org/api/current/bpy_extras.object_utils.html#bpy_extras.object_utils.object_data_add
     created_control_grid = object_data_add(
-        context, control_mesh, operator=self, name="Bézier Surface")
+        context, control_grid_mesh, operator=self, name="Bézier Surface")
     created_output_object = object_data_add(
         context, output_mesh, operator=self, name="Bézier Output Object")
 
+    # Set boundary edges as sharp
+    control_grid_bmesh = bmesh.new()   # create an empty BMesh
+    control_grid_bmesh.from_mesh(control_grid_mesh)
+
+    # Get boundary edges: https://blender.stackexchange.com/a/242988/76575
+    control_grid_bmesh.edges.ensure_lookup_table()
+    for edge in control_grid_bmesh.edges:
+        if edge.is_boundary:
+            edge.smooth = False
+
+    control_grid_bmesh.to_mesh(control_grid_mesh)
+
+    # Setup output object metadata
     created_output_object.parent = created_control_grid
 
     # Used Python tooltip feature of Blender UI to determine these API calls
@@ -123,10 +114,6 @@ class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
     def execute(self, context):
         add_object(self, context)
         return {'FINISHED'}
-
-
-def edge_is_sharp(edge):
-    return not edge.smooth
 
 
 def bernstein_polynomial(degree, index, parameter):
@@ -172,228 +159,401 @@ def add_value_to_array(array, value):
     return [element + value for element in array]
 
 
-def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_mesh_to_replace: bpy.types.Mesh):
+def ensure_uv_layers(
+    uv_layers: bmesh.types.BMLayerCollection,
+    num_uv_layers: int
+) -> list[bmesh.types.BMLayerItem]:
+    output_uv_layers = [None] * num_uv_layers
+    patch_prefix = "Patch_"
+
+    # Acquire existing layers
+    # @FIXME: BMesh created from scratch each edit.
+    #   Preserve previous UV properties when creating new BMesh
+
+    # for uv_layer_name, uv_layer in uv_layers.items():
+    #     print(uv_layer_name)
+
+    # Create new layers for ones not existing
+    for i, output_uv_layer in enumerate(output_uv_layers):
+        if output_uv_layer is not None:
+            continue
+
+        output_uv_layers[i] = uv_layers.new(f"{patch_prefix}{i}")
+
+    return output_uv_layers
+
+
+def umbilic_gradient_descent(
+    start_parameters: mathutils.Vector,
+    control_points,
+    iterations=1000,
+    learning_rate=1e-5,
+    stopping_threshold=1e-6
+):
+    previous_parameters = start_parameters
+    previous_value = imported_math_from_sympy.umbilic(
+        control_points,
+        start_parameters.x,
+        start_parameters.y
+    )
+
+    for iteration in range(iterations):
+        u_derivative = imported_math_from_sympy.umbilic_u_derivative(
+            control_points,
+            previous_parameters.x,
+            previous_parameters.y
+        )
+        v_derivative = imported_math_from_sympy.umbilic_v_derivative(
+            control_points,
+            previous_parameters.x,
+            previous_parameters.y
+        )
+
+        gradient = mathutils.Vector((
+            u_derivative,
+            v_derivative,
+        ))
+
+        # print(gradient.magnitude)
+        # print(gradient.normalized())
+
+        scaled_gradient = gradient
+
+        # print(previous_parameters)
+
+        current_parameters = previous_parameters - (learning_rate * gradient)
+
+        if current_parameters.x < 0 or current_parameters.x > 1 or current_parameters.y < 0 or current_parameters.y > 1:
+            return False, previous_value, previous_parameters
+
+        # print(current_parameters)
+
+        current_value = imported_math_from_sympy.umbilic(
+            control_points,
+            current_parameters.x,
+            current_parameters.y
+        )
+
+        if abs(current_value - previous_value) <= stopping_threshold:
+            return True, current_value, current_parameters
+
+        previous_parameters = current_parameters
+        previous_value = current_value
+
+    return False, current_value, current_parameters
+
+
+def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: bpy.types.Object):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
 
     # print("start\n")
+    patches_sharp_corner_faces = \
+        utilities.get_3x3_patches_from_sharp_border(control_bmesh)
 
     patches = []
+    for sharp_corner_faces in patches_sharp_corner_faces:
+        control_loops = \
+            utilities.get_3x3_patch_loops_in_topological_order(sharp_corner_faces)
 
-    # Find patch of 3x3 quads with 16 verticies in control_bmesh defined by a sharp border
-    unvisited_faces = set(control_bmesh.faces)
+        control_verticies = [
+            [loop.vert.co for loop in x_array] for x_array in control_loops
+        ]
 
-    while len(unvisited_faces) != 0:
-        # Start at random face
-        start_face = unvisited_faces.pop()
+        patches.append(control_verticies)
 
-        patch_faces = set()
-        patch_corner_verticies = set()
-        patch_corner_faces = set()
-        patch_sharp_verticies = set()
+    # Start new mesh from scratch
+    output_bmesh = bmesh.new()
 
-        faces_queue = set()
-        faces_queue.add(start_face)
+    u_num_verts = 20
+    v_num_verts = 20
 
-        num_non_sharp_faces = 0
+    # @NOTE: Cannot have mulitple UV Maps as only "one" UV map is able to be
+    #   inputted to materials without Nodes.  Therefore use material index
+    #   to differentiate textures in patches.
+    # num_patches = len(patches)
+    # uv_layers = ensure_uv_layers(output_bmesh.loops.layers.uv, num_patches)
+    # print(uv_layers)
 
-        while len(faces_queue) != 0:
-            current_face = faces_queue.pop()
+    uv_layer = output_bmesh.loops.layers.uv.verify()
 
-            # If traversal for edge boundary hit non-quad, then this is not a
-            #   3x3 patch
-            if len(current_face.verts) != 4:
-                break
-
-            patch_faces.add(current_face)
-
-            # If traversal has hit more than 9 quads, then this not a 3x3 patch
-            if len(patch_faces) > 9:
-                break
-
-            temp_patch_corner_verticies = None
-
-            non_sharp_edges = []
-            sharp_edges = []
-            for edge in current_face.edges:
-                if edge.smooth:
-                    # Add to queue non-sharp edges of face
-                    non_sharp_edges.append(edge)
-                else:
-                    sharp_edges.append(edge)
-
-                    sharp_verticies = set(vertex for vertex in edge.verts)
-                    patch_sharp_verticies = patch_sharp_verticies.union(sharp_verticies)
-
-                    # Get verticies shared between sharp edges in face
-                    if temp_patch_corner_verticies is None:
-                        temp_patch_corner_verticies = sharp_verticies
-                    else:
-                        temp_patch_corner_verticies = temp_patch_corner_verticies.intersection(
-                            sharp_verticies)
-
-            if len(non_sharp_edges) == 4:
-                num_non_sharp_faces += 1
-
-            if len(non_sharp_edges) == 2:
-                # Should only be 1 corner vertex in corners of 3x3 patch
-                if temp_patch_corner_verticies is not None and len(temp_patch_corner_verticies) > 0:
-                    patch_corner_verticies.add(temp_patch_corner_verticies.pop())
-
-                patch_corner_faces.add(current_face)
-
-            # Acquire linked faces to traverse next
-            for non_sharp_edge in non_sharp_edges:
-                for link_face in non_sharp_edge.link_faces:
-                    # Do not visit already visited faces
-                    if link_face not in patch_faces:
-                        faces_queue.add(link_face)
-
-        # Condition for valid patch boundary
-        if len(patch_faces) == 9 and num_non_sharp_faces == 1:
-            # Valid patch boundary
-            # print("\n\n\nvalid")
-
-            # Get set of all unique verticies for this patch
-            # patch_verticies = set()
-            # for face in patch_faces:
-            #     for vertex in face.verts:
-            #         patch_verticies.add(vertex)
-            #
-            # print(len(patch_verticies))
-
-            verticies = [[None] * 4 for _ in range(4)]
-
-            # Secondary edge is horizontal, start of vertical traversal
-            primary_sharp = None
-            secondary_sharp = None
-
-            # Choose starting corner based on order of sharp edges around the
-            #   loop
-            # Loops seem to go counter-clockwise
-            for corner_face in patch_corner_faces:
-                primary_sharp = None
-                secondary_sharp = None
-                good = True
-
-                loop_index = 0
-                for loop in corner_face.loops:
-                    good = False
-
-                    if loop_index == 0 and edge_is_sharp(loop.edge):
-                        secondary_sharp = loop
-                        good = True
-                    elif loop_index == 1 and edge_is_sharp(loop.edge):
-                        primary_sharp = loop
-                        good = True
-                    elif loop_index == 2 and not edge_is_sharp(loop.edge):
-                        good = True
-                    elif loop_index == 3 and not edge_is_sharp(loop.edge):
-                        good = True
-
-                    if not good:
-                        break
-
-                    loop_index += 1
-
-                # Found a good corner
-                if good:
-                    break
-
-            # Build 2D table of verticies by doing a edge ring traversal
-            #   for every edge in the orthogonal
-            #       (wrong word as direction between edges can be skewed)
-            #   edge ring traversal
-            start_loop = secondary_sharp
-            for secondary_edge_num in range(0, 3):
-                start_loop = start_loop.link_loop_next
-
-                # print("aaa")
-                # print(start_loop.edge.index)
-                # print("begin")
-
-                loop = start_loop
-
-                # print(loop.vert.index)
-
-                for edge_num in range(0, 3):
-                    for loop_num in range(0, 2):
-                        # [y][x]
-                        y = edge_num
-                        x = secondary_edge_num + loop_num
-                        verticies[y][x] = loop.vert.co
-
-                        loop = loop.link_loop_next
-
-                    if edge_num != 2:
-                        loop = next(iter(loop.link_loops))
-                    else:
-                        verticies[3][secondary_edge_num + 1] = loop.vert.co
-                        loop = loop.link_loop_next
-
-                verticies[3][secondary_edge_num] = loop.vert.co
-
-                start_loop = start_loop.link_loop_next
-
-                if secondary_edge_num != 2:
-                    start_loop = next(iter(start_loop.link_loops))
-
-            patches.append(verticies)
-
-        unvisited_faces = unvisited_faces.difference(patch_faces)
-
-    # Create new output mesh
-    # output_bmesh = bmesh.new()
-    # output_bmesh.from_mesh(output_mesh_to_replace)
-    # output_bmesh.clear()
-
-    # print(output_bmesh)
-
-    # Hot to create vertices
-    # vertex1 = output_bmesh.verts.new((0.0, 0.0, 3.0))
-    # vertex2 = output_bmesh.verts.new((2.0, 0.0, 3.0))
-    # vertex3 = output_bmesh.verts.new((2.0, 2.0, 3.0))
-    # vertex4 = output_bmesh.verts.new((0.0, 2.0, 3.0))
-
-    # Initialize the index values of this sequence.
-    # output_bmesh.verts.index_update()
-
-    # How to create edges
-    # output_bmesh.edges.new((vertex1, vertex2))
-    # output_bmesh.edges.new((vertex2, vertex3))
-    # output_bmesh.edges.new((vertex3, vertex4))
-    # output_bmesh.edges.new((vertex4, vertex1))
-
-    # How to create a face
-    # it's not necessary to create the edges before, I made it only to show how create
-    # edges too
-    # output_bmesh.faces.new((vertex1, vertex2, vertex3, vertex4))
-
-    # Replace output mesh with newly generated one
-    # output_bmesh.to_mesh(output_mesh_to_replace)
-    # output_bmesh.free()
-
-    verticies = []
-    faces = []
-
-    for patch_control_points in patches:
-
-        print("\n\nAAAA")
-
+    for patch_index, patch_control_points in enumerate(patches):
         def generator_function(u, v):
             return bezier_surface_at_parameters(patch_control_points, u, v)
 
-        patch_verticies, patch_faces = grid_mesh(generator_function, 20, 20)
+        # @TODO: Each grid mesh is not connected, new verticies are made for
+        #   each bordering patch
+        added_verticies_references, added_faces_references = \
+            utilities.add_grid_mesh_to_bmesh(
+                output_bmesh, generator_function, u_num_verts, v_num_verts
+            )
 
-        for face_index, _ in enumerate(patch_faces):
-            patch_faces[face_index] = add_value_to_array(
-                patch_faces[face_index], len(verticies))
+        # Create UV Map for patch going from 0 to 1 on both U and V for all
+        #   patches
+        for vertex_index, vertex_reference in enumerate(added_verticies_references):
+            v_index = vertex_index % u_num_verts
+            u_index = vertex_index // u_num_verts
 
-        verticies += patch_verticies
-        faces += patch_faces
+            u_pos = u_index / (u_num_verts - 1)
+            v_pos = v_index / (v_num_verts - 1)
 
-    edges = []
-    output_mesh_to_replace.clear_geometry()
-    output_mesh_to_replace.from_pydata(verticies, edges, faces)
+            for loop in vertex_reference.link_loops:
+                # @TODO: Why does array access on a loop for uv work??
+                loop[uv_layer].uv = mathutils.Vector((u_pos, v_pos))
+
+        # Set material index for patch for seperating each patch's material
+        for face in added_faces_references:
+            face.material_index = patch_index
+
+    # Ensure adequate number of material slots
+    num_patches = len(patches)
+    starting_num_materials = len(output_object.data.materials)
+    for i in range(starting_num_materials, num_patches):
+        output_object.data.materials.append(None)
+
+    patch_prefix = "Patch_"
+
+    u_image_size = 50
+    v_image_size = 50
+
+    # Ensure adequate number of image data blocks for each patch
+    images = [None] * num_patches
+    for image_name, image in bpy.data.images.items():
+        if patch_prefix in image_name:
+            if image.size[0] != u_image_size and image.size[1] != v_image_size:
+                bpy.data.images.remove(image)
+            else:
+                index = int(image_name.replace(patch_prefix, ""))
+                images[index] = image
+
+    for image_index, image in enumerate(images):
+        if image is None:
+            images[image_index] = bpy.data.images.new(
+                f"{patch_prefix}{image_index}", u_image_size, v_image_size
+            )
+
+    # Create new material for all material slots non-ocupied
+    #   that has the image for the patch UV-mapped.
+    for patch_index, material in enumerate(output_object.data.materials):
+        # Ensure material slots have a material present
+        if material is None:
+            new_material = bpy.data.materials.new(
+                f"{patch_prefix}{patch_index}"
+            )
+
+            # Create material with texture from Python:
+            #   https://blender.stackexchange.com/a/240372/76575
+            new_material.use_nodes = True
+
+            node_tree = new_material.node_tree
+            nodes = new_material.node_tree.nodes
+            nodes.clear()
+
+            node_uv_map = nodes.new(type='ShaderNodeUVMap')
+            node_uv_map.location = (-800, 0)
+
+            node_texture = nodes.new('ShaderNodeTexImage')
+            node_texture.image = images[patch_index]
+            node_texture.location = (-400, 0)
+
+            node_diffuse = nodes.new(type='ShaderNodeBsdfDiffuse')
+            node_diffuse.location = (0, 0)
+
+            node_output = nodes.new(type='ShaderNodeOutputMaterial')
+            node_output.location = (400, 0)
+
+            links = new_material.node_tree.links
+            link = links.new(node_uv_map.outputs["UV"], node_texture.inputs["Vector"])
+            link = links.new(node_texture.outputs["Color"], node_diffuse.inputs["Color"])
+            link = links.new(node_diffuse.outputs["BSDF"], node_output.inputs["Surface"])
+
+            output_object.data.materials[patch_index] = new_material
+            material = new_material
+
+        # Ignore materials who dont use nodes
+        # if not material.use_nodes:
+        #     break
+
+        # found_image_node = False
+        # for node in material.node_tree.nodes:
+        #     if node.name == "Image Texture":
+        #         found_image_node = True
+        #         break
+
+        # if not found_image_node:
+        #     texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
+        #     texImage.image
+
+    # start_time = datetime.datetime.now()
+
+    if True:
+        image_buffer = numpy.zeros((v_image_size, u_image_size, 4))
+
+        u_num_sample_points = 15
+        v_num_sample_points = 15
+
+        u_scan_size = 10
+        v_scan_size = 10
+
+        # Modify textures to display surface values
+        for patch_index, image in enumerate(images):
+            num_data_points = len(image.pixels)
+            u_size, v_size = image.size
+            num_channels = image.channels
+
+            start_time = datetime.datetime.now()
+
+            # for v_sample_point in range(v_num_sample_points):
+            #     for u_sample_point in range(u_num_sample_points):
+            #         u_pos = u_sample_point / (u_num_sample_points - 1)
+            #         v_pos = v_sample_point / (v_num_sample_points - 1)
+            #
+            #         found, value, parameters = umbilic_gradient_descent(
+            #             mathutils.Vector((u_pos, v_pos)),
+            #             patches[patch_index]
+            #         )
+            #
+            #         u_pixel_pos = int((u_size - 1) * parameters.x)
+            #         v_pixel_pos = int((v_size - 1) * parameters.y)
+            #
+            #         r = g = b = 0.0
+            #
+            #         if found:
+            #             if value <= 1e-6:
+            #                 r = g = b = 1.0
+            #             else:
+            #                 r = 1.0
+            #         else:
+            #             if value <= 1e-6:
+            #                 b = 1.0
+            #             else:
+            #                 g = 1.0
+            #
+            #         print(value)
+            #
+            #         image_buffer[u_pixel_pos][v_pixel_pos] = (
+            #             r, g, b, 1.0
+            #         )
+
+            # for v_pixel in range(v_size):
+            #     for u_pixel in range(u_size):
+            #         u_val = u_pixel / (u_size - 1)
+            #         v_val = v_pixel / (v_size - 1)
+            #
+            #         umbilic_val = imported_math_from_sympy.umbilic(
+            #             patches[patch_index], u_val, v_val
+            #         )
+            #
+            #         r = g = b = 0.0
+            #
+            #         # umbilic_val = abs(umbilic_val)
+            #
+            #         if umbilic_val <= 1.0:
+            #             r = 1.0
+            #             g = 1.0
+            #             b = 1.0
+            #         elif umbilic_val > 1.0 and umbilic_val <= 200.0:
+            #             r = umbilic_val / 200.0
+            #         elif umbilic_val > 200.0 and umbilic_val <= 400.0:
+            #             g = 1.0
+            #         elif umbilic_val > 400.0:
+            #             b = 1.0
+            #
+            #         image_buffer[v_pixel][u_pixel] = (
+            #             r, g, b, 1.0
+            #         )
+            #
+            #         # if umbilic_val <= 1.0:
+            #         #
+            #         #     u_pixel_pos = int((u_size - 1) * u_val)
+            #         #     v_pixel_pos = int((v_size - 1) * u_val)
+            #         #
+            #         #     image_buffer[v_pixel_pos][u_pixel_pos] = (
+            #         #         1.0, 0.0, 0.0, 1.0
+            #         #     )
+
+            for v_pixel in range(v_scan_size):
+                for u_pixel in range(u_scan_size):
+                    u_val = u_pixel / (u_scan_size - 1)
+                    v_val = v_pixel / (v_scan_size - 1)
+
+                    # umbilic_val = imported_math_from_sympy.umbilic(
+                    #     patches[patch_index], u_val, v_val
+                    # )
+                    #
+                    # if umbilic_val <= 100:
+
+                    found, value, parameters = umbilic_gradient_descent(
+                        mathutils.Vector((u_val, v_val)),
+                        patches[patch_index],
+                        iterations=1000,
+                        learning_rate=1e-5,
+                        stopping_threshold=1e-6
+                    )
+
+                    u_pixel_pos = int((u_size - 1) * parameters.x)
+                    v_pixel_pos = int((v_size - 1) * parameters.y)
+
+                    r = g = b = 0.0
+
+                    compare_val = 1e-4
+
+                    true_val = imported_math_from_sympy.umbilic(
+                        patches[patch_index],
+                        parameters.x,
+                        parameters.y
+                    )
+
+                    print(value, true_val)
+
+                    if value <= compare_val:
+                        image_buffer[v_pixel_pos][u_pixel_pos] = (
+                            0.0, 1.0, 0.0, 1.0
+                        )
+
+                    # if found:
+                    #     if value <= compare_val:
+                    #         r = g = b = 1.0
+                    #     else:
+                    #         r = 1.0
+                    # else:
+                    #     if value <= compare_val:
+                    #         b = 1.0
+                    #     else:
+                    #         g = 1.0
+                    #
+                    # print(found, value)
+                    #
+                    # image_buffer[u_pixel_pos][v_pixel_pos] = (
+                    #     r, g, b, 1.0
+                    # )
+
+            end_time = datetime.datetime.now()
+            time_lapsed = (end_time - start_time).total_seconds()
+            print(time_lapsed)
+
+            raveled_image = numpy.ravel(image_buffer)
+            image.pixels = raveled_image
+            image.update()
+
+            # output_pixels = [0.0] * u_size * v_size * num_channels
+            # for v_pixel in range(v_size):
+            #     for u_pixel in range(u_size):
+            #         pixel_start = (v_pixel * u_size * num_channels) + u_pixel * num_channels
+            #         output_pixels[pixel_start: pixel_start + num_channels] = (1.0, 1.0, 1.0, 1.0)
+
+            # for index in range(num_data_points):
+            #     image.pixels[index] = 0.0
+
+            # print(len(image.pixels))
+            # print(image.channels)
+
+    # end_time = datetime.datetime.now()
+    # time_lapsed = (end_time - start_time).total_seconds()
+    # print(time_lapsed)
+
+    # Overwrite mesh
+    output_mesh = output_object.data
+    output_bmesh.to_mesh(output_mesh)
 
 
 def cb_scene_update(scene):
@@ -410,9 +570,8 @@ def cb_scene_update(scene):
         #   mesh object as a child
         if output_object is not None:
             control_mesh = edit_obj.data
-            output_mesh = output_object.data
 
-            create_and_replace_output_mesh(control_mesh, output_mesh)
+            create_and_replace_output_mesh(control_mesh, output_object)
 
 
 def add_bezier_surface_button(self, context):
@@ -450,49 +609,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
-#   Traverse sharp edge of patch until hit another corner vertex
-#   Store other sharp edge vertex as next start
-#   Add faces to visited faces
-
-# Use start
-#   Exit if start is another corner
-#   Store next sharp vertex as next start
-#
-#   For all, ignore verticies in visited faces
-#   For one step, traverse edge that's not sharp at new start
-#
-#   Traverse edge that is not part of last traversed face
-#   For rest of steps until hit vertex with sharp edge:
-
-# Use start
-#   Traverse sharp edge that was not last traveled until hit
-#       another corner vertex
-
-# For quads, Traversal of 2 loops acquires the edge opposite to
-#   start loop regardless of direction of loop.
-
-# start_face, non_sharp_edges = set_of_corner_edges
-#
-# primary_edge = non_sharp_edges[0]
-# primary_loop = None
-# secondary_edge = non_sharp_edges[1]
-# secondary_loop = None
-
-# Find loops associated with primary/secondary edge
-# for loop in start_face.loops:
-#     if loop.edge is primary_edge:
-#         primary_loop = loop
-#     elif loop.edge is secondary_edge:
-#         secondary_loop = loop
-
-# 1. Traverse primary edge ring until hit sharp edge
-
-# 2. Traverse secondary edge ring until hit sharp edge
-
-# 1. Start at one edge of a corner, traverse edge ring while
-#   storing each sharp edge.  This will define the the "u" border
-#   verticies.
-# 2. Start at the other edge of the corner, traverse edge ring
-#   while storing each sharp edge.  This will define the the "u"
-#   border verticies.

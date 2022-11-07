@@ -1,0 +1,15 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+sympy = "*"
+# numpy version included with Blender 3.3.0
+numpy = "==1.22.0"
+
+[dev-packages]
+
+[requires]
+# Python version included with Blender 3.3.0
+python_version = "3.10.2"
