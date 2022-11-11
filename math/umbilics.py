@@ -10,8 +10,8 @@ import sympy.vector
 
 import shared_math
 
-OUTPUT_FOLDER = pathlib.Path("./output")
-
+OUTPUT_FOLDER = pathlib.Path("../honor_thesis_blender_addon")
+OUTPUT_FILE = OUTPUT_FOLDER / "imported_math_from_sympy.py"
 
 def change_lambda_function_name(function_source: str, new_name: str):
     function_source_lines = function_source.splitlines()
@@ -42,6 +42,44 @@ def convert_sympy_to_source(expression, symbols, function_name):
     )
 
     return get_function_source(umbilic_function, function_name)
+
+def substitute_bezier_differential_symbols(
+    expression,
+    func_bernstein_polynomial_symbol,
+    first_and_second_magnitude_substitutions
+):
+    out_expression = expression.subs(
+        first_and_second_magnitude_substitutions
+    )
+    out_expression = out_expression.replace(
+        func_bernstein_polynomial_symbol,
+        shared_math.bernstein_polynomial
+    )
+    # Apply derivatives of Bernstein polynomial
+    out_expression = out_expression.doit()
+
+    return out_expression
+
+def convert_bezier_differential_expression_to_source(
+    expression,
+    symbols,
+    func_bernstein_polynomial_symbol,
+    first_and_second_magnitude_substitutions,
+    function_name
+):
+    out_expression = substitute_bezier_differential_symbols(
+        expression,
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions
+    )
+
+    source = convert_sympy_to_source(
+        out_expression,
+        symbols,
+        function_name
+    )
+
+    return source
 
 
 def main() -> int:
@@ -93,15 +131,15 @@ def main() -> int:
 
     i_symbol, j_symbol = sympy.symbols('i j')
 
-    func_bernstein_polynomial = sympy.Function('B', real=True)
+    func_bernstein_polynomial_symbol = sympy.Function('B', real=True)
 
     # Surface equation: Bézier surface
     #   https://en.wikipedia.org/wiki/Bézier_surface
     surface = None
     for j in range(degree_v + 1):
         for i in range(degree_u + 1):
-            addition_expr = func_bernstein_polynomial(degree_u, i, u_symbol) \
-                * func_bernstein_polynomial(degree_v, j, v_symbol) \
+            addition_expr = func_bernstein_polynomial_symbol(degree_u, i, u_symbol) \
+                * func_bernstein_polynomial_symbol(degree_v, j, v_symbol) \
                 * points[j][i]
 
             if surface is None:
@@ -136,6 +174,7 @@ def main() -> int:
     M = unit_normal_vector.dot(u_v_derivative)
     N = unit_normal_vector.dot(v_v_derivative)
 
+    # From Hosaka
     umbilic = (
         (E_symbol * N_symbol)
         + (G_symbol * L_symbol)
@@ -145,28 +184,30 @@ def main() -> int:
         * ((E_symbol * G_symbol) - F_symbol ** 2)
     )
 
-    # print(sympy.pretty(sympy.simplify(umbilic)))
-    #
-    # print(sympy.pretty(umbilic))
-
-    umbilic = umbilic.subs({
+    first_and_second_magnitude_substitutions = {
         E_symbol: E,
         F_symbol: F,
         G_symbol: G,
         L_symbol: L,
         M_symbol: M,
         N_symbol: N
-    })
+    }
 
-    umbilic = umbilic.replace(func_bernstein_polynomial, shared_math.bernstein_polynomial)
-    umbilic = umbilic.doit()
+    umbilic = substitute_bezier_differential_symbols(
+        umbilic,
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions
+    )
 
     u_derivative_umbilic = sympy.diff(umbilic, u_symbol)
     v_derivative_umbilic = sympy.diff(umbilic, v_symbol)
 
     print("Lamdify umbilic function")
 
-    output_source = "from math import sqrt"
+    output_source = (
+        "from math import sqrt\n"
+        "from numpy import greater_equal"
+    )
 
     output_source += "\n\n" + convert_sympy_to_source(
         umbilic, [points_symbol, u_symbol, v_symbol], "umbilic"
@@ -184,7 +225,130 @@ def main() -> int:
         v_derivative_umbilic, [points_symbol, u_symbol, v_symbol], "umbilic_v_derivative"
     )
 
-    with open(OUTPUT_FOLDER / "umbilics.py", 'w') as output_file:
+    H_symbol, K_symbol = sympy.symbols('H K')
+
+    min_curvature = H_symbol - sympy.sqrt((H_symbol ** 2) - K_symbol)
+    max_curvature = H_symbol + sympy.sqrt((H_symbol ** 2) - K_symbol)
+
+    # From "On Integrating Lines of Curvature"
+    H = (
+        (2 * F_symbol * M_symbol)
+        - (E_symbol * N_symbol)
+        - (G_symbol * L_symbol)
+    ) / (
+        2 * ((E_symbol * G_symbol)
+        - (F_symbol ** 2))
+    )
+    # Text might mention this is Mean curvature?
+
+    K = (
+        (L_symbol * N_symbol) - (M_symbol ** 2)
+    ) / (
+        (E_symbol * G_symbol) - (F_symbol ** 2)
+    )
+    # Text might mention this is Gaussian curvature?
+
+    print(sympy.pretty(H))
+    print(sympy.pretty(K))
+
+    print("Min/max curvatures")
+
+    min_curvature = min_curvature.subs({
+        H_symbol: H,
+        K_symbol: K,
+    })
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        min_curvature,
+        [points_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "min_principal_curvature"
+    )
+
+    max_curvature = max_curvature.subs({
+        H_symbol: H,
+        K_symbol: K,
+    })
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        min_curvature,
+        [points_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "max_principal_curvature"
+    )
+
+    print("Principle directions")
+
+    principle_curvature_symbol = sympy.Symbol('kp')
+
+    # @TODO: Provide smybolic version of equations
+    principle_direction_u_1 = -1 * (
+        (principle_curvature_symbol * F_symbol) + M_symbol
+    )
+    principle_direction_v_1 = (
+        (principle_curvature_symbol * E_symbol) + L_symbol
+    )
+    principle_direction_u_2 = -1 * (
+        (principle_curvature_symbol * G_symbol) + N_symbol
+    )
+    principle_direction_v_2 = (
+        (principle_curvature_symbol * F_symbol) + M_symbol
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_u_1,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_u_1"
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_v_1,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_v_1"
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_u_2,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_u_2"
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_v_2,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_v_2"
+    )
+
+
+    print("Switch condition")
+
+    # https://docs.sympy.org/latest/modules/core.html#sympy.core.relational.GreaterThan
+    # When true, solve 1, if not, solve 2
+    switch_condition = sympy.GreaterThan(
+        sympy.Abs(L_symbol + (principle_curvature_symbol * E_symbol)),
+        sympy.Abs(N_symbol + (principle_curvature_symbol * G_symbol))
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        switch_condition,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_curvature_switch_condition"
+    )
+
+
+    with open(OUTPUT_FILE, 'w') as output_file:
         output_file.write(output_source)
 
     return 0
