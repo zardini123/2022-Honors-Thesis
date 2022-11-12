@@ -13,6 +13,7 @@ import shared_math
 OUTPUT_FOLDER = pathlib.Path("../honor_thesis_blender_addon")
 OUTPUT_FILE = OUTPUT_FOLDER / "imported_math_from_sympy.py"
 
+
 def change_lambda_function_name(function_source: str, new_name: str):
     function_source_lines = function_source.splitlines()
 
@@ -43,6 +44,7 @@ def convert_sympy_to_source(expression, symbols, function_name):
 
     return get_function_source(umbilic_function, function_name)
 
+
 def substitute_bezier_differential_symbols(
     expression,
     func_bernstein_polynomial_symbol,
@@ -59,6 +61,7 @@ def substitute_bezier_differential_symbols(
     out_expression = out_expression.doit()
 
     return out_expression
+
 
 def convert_bezier_differential_expression_to_source(
     expression,
@@ -237,7 +240,7 @@ def main() -> int:
         - (G_symbol * L_symbol)
     ) / (
         2 * ((E_symbol * G_symbol)
-        - (F_symbol ** 2))
+             - (F_symbol ** 2))
     )
     # Text might mention this is Mean curvature?
 
@@ -272,7 +275,7 @@ def main() -> int:
     })
 
     output_source += '\n\n' + convert_bezier_differential_expression_to_source(
-        min_curvature,
+        max_curvature,
         [points_symbol, u_symbol, v_symbol],
         func_bernstein_polynomial_symbol,
         first_and_second_magnitude_substitutions,
@@ -329,6 +332,31 @@ def main() -> int:
         "principle_direction_v_2"
     )
 
+    u_dir_1_symbol, v_dir_1_symbol, u_dir_2_symbol, v_dir_2_symbol = sympy.symbols(
+        'u_1 v_1 u_2 v_2')
+
+    orthogonal_verification_value = (
+        (E_symbol * u_dir_1_symbol * u_dir_2_symbol)
+        + (
+            F_symbol * (
+                (u_dir_1_symbol * v_dir_2_symbol)
+                + (u_dir_2_symbol * v_dir_1_symbol)
+            )
+        )
+        + (G_symbol * v_dir_1_symbol * v_dir_2_symbol)
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        orthogonal_verification_value,
+        [
+            points_symbol, u_symbol, v_symbol,
+            u_dir_1_symbol, v_dir_1_symbol,
+            u_dir_2_symbol, v_dir_2_symbol
+        ],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "orthogonal_verification_value"
+    )
 
     print("Switch condition")
 
@@ -346,7 +374,6 @@ def main() -> int:
         first_and_second_magnitude_substitutions,
         "principle_curvature_switch_condition"
     )
-
 
     with open(OUTPUT_FILE, 'w') as output_file:
         output_file.write(output_source)

@@ -1,6 +1,7 @@
 """2022 Honors Thesis Blender Addon."""
 
 import math
+import statistics
 import typing
 import datetime
 
@@ -243,6 +244,58 @@ def umbilic_gradient_descent(
     return False, current_value, current_parameters
 
 
+def lerp(a, b, t):
+    """From: https://en.wikipedia.org/wiki/Linear_interpolation"""
+    return a + t * (b - a)
+
+
+def principle_direction(principle_curvature, patch, u_val, v_val):
+    use_direction_1_condition = imported_math_from_sympy.principle_curvature_switch_condition(
+        patch, principle_curvature, u_val, v_val
+    )
+
+    if use_direction_1_condition:
+        principle_direction_u = imported_math_from_sympy.principle_direction_u_1(
+            patch, principle_curvature, u_val, v_val
+        )
+
+        principle_direction_v = imported_math_from_sympy.principle_direction_v_1(
+            patch, principle_curvature, u_val, v_val
+        )
+    else:
+        principle_direction_u = imported_math_from_sympy.principle_direction_u_2(
+            patch, principle_curvature, u_val, v_val
+        )
+
+        principle_direction_v = imported_math_from_sympy.principle_direction_v_2(
+            patch, principle_curvature, u_val, v_val
+        )
+
+    principle_vector = mathutils.Vector(
+        (principle_direction_u, principle_direction_v))
+
+    return principle_vector
+
+
+def min_max_principle_directions(patch, u_val, v_val):
+    min_principal_curvature = imported_math_from_sympy.min_principal_curvature(
+        patch, u_val, v_val
+    )
+
+    max_principal_curvature = imported_math_from_sympy.max_principal_curvature(
+        patch, u_val, v_val
+    )
+
+    min_principal_vector = principle_direction(
+        min_principal_curvature, patch, u_val, v_val
+    )
+    max_principal_vector = principle_direction(
+        max_principal_curvature, patch, u_val, v_val
+    )
+
+    return (min_principal_vector, max_principal_vector)
+
+
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: bpy.types.Object):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
 
@@ -261,7 +314,9 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
         patches.append(control_verticies)
 
-    if False:
+    start_time = datetime.datetime.now()
+
+    if True:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
 
@@ -313,8 +368,8 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
         patch_prefix = "Patch_"
 
-        u_image_size = 50
-        v_image_size = 50
+        u_image_size = 1024
+        v_image_size = 1024
 
         # Ensure adequate number of image data blocks for each patch
         images = [None] * num_patches
@@ -401,9 +456,199 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                 u_size, v_size = image.size
                 num_channels = image.channels
 
-                start_time = datetime.datetime.now()
-
                 if True:
+                    start_depth = 0
+
+                    stack = []
+                    stack.append(
+                        (start_depth, (0, 1), (0, 1))
+                    )
+
+                    is_parallel_angle_threshold = 20
+                    too_small_size_of_bound_threshold = 1e-14
+                    umbilic_threshold = 1e-10
+
+                    num_samples_per_axis = 2
+
+                    area_percentages = {}
+
+                    while len(stack) != 0:
+                        stack_tuple = stack.pop()
+                        current_depth, u_bound, v_bound = stack_tuple
+
+                        if abs(u_bound[0] - u_bound[1]) < too_small_size_of_bound_threshold:
+                            continue
+
+                        if abs(v_bound[0] - v_bound[1]) < too_small_size_of_bound_threshold:
+                            continue
+
+                        if current_depth > 1000:
+                            print("ERROR: MAX STACK DEPTH HIT")
+                            stack = []
+                            break
+
+                        # print(stack_tuple)
+
+                        # Determine if principle direction orientations are generally
+                        #   in the same orientation
+
+                        min_p_running_average = None
+                        max_p_running_average = None
+
+                        count = 0
+
+                        need_subdivide = False
+
+                        for v_index in range(num_samples_per_axis):
+                            if need_subdivide:
+                                break
+
+                            for u_index in range(num_samples_per_axis):
+                                u_pre = u_index / (num_samples_per_axis - 1)
+                                v_pre = v_index / (num_samples_per_axis - 1)
+
+                                u = lerp(u_bound[0], u_bound[1], u_pre)
+                                v = lerp(v_bound[0], v_bound[1], v_pre)
+
+                                # print(u, v)
+
+                                umbilic_val = imported_math_from_sympy.umbilic(
+                                    patches[patch_index], u, v
+                                )
+
+                                # print("umbilic val:", umbilic_val)
+
+                                if umbilic_val <= umbilic_threshold:
+                                    print("umbilic:", current_depth, umbilic_val)
+                                    need_subdivide = False
+                                    break
+
+                                min_principal_vector, max_principal_vector = \
+                                    min_max_principle_directions(
+                                        patches[patch_index], u, v
+                                    )
+
+                                # world_point = bezier_surface_at_parameters(
+                                #     patches[patch_index], u, v)
+                                # world_min_principal_vector = \
+                                #     bezier_surface_at_parameters(
+                                #         patches[patch_index], u +
+                                #         min_principal_vector.x, v + min_principal_vector.y
+                                #     )
+                                # world_max_principal_vector = \
+                                #     bezier_surface_at_parameters(
+                                #         patches[patch_index], u +
+                                #         max_principal_vector.x, v + max_principal_vector.y
+                                #     )
+                                #
+                                # min_principal_vector = world_min_principal_vector - world_point
+                                # max_principal_vector = world_max_principal_vector - world_point
+
+                                # min_principal_vector = \
+                                #     bezier_surface_at_parameters(
+                                #         patches[patch_index], u + min_principal_vector.x, v + min_principal_vector.y) \
+                                #     - world_point
+                                #
+                                # max_principal_vector = \
+                                #     bezier_surface_at_parameters(
+                                #         patches[patch_index], u + max_principal_vector.x, v + max_principal_vector.y) \
+                                #     - world_point
+
+                                if count == 0:
+                                    min_p_running_average = min_principal_vector
+                                    max_p_running_average = max_principal_vector
+
+                                    count += 1
+                                    continue
+
+                                rad_to_degree = 360 / (2 * math.pi)
+
+                                min_current_angle = min_p_running_average.angle(
+                                    min_principal_vector) * rad_to_degree
+                                max_current_angle = max_p_running_average.angle(
+                                    max_principal_vector) * rad_to_degree
+
+                                # print(min_current_angle, max_current_angle)
+
+                                # Vector not parallel enough
+                                # -90, 90 parellel
+                                # 20 degree threshold
+                                # [-90, -70] and [70, 90]
+                                # If in [0, 70] range, is not parallel enough
+
+                                if abs(min_current_angle - 90) < (90 - is_parallel_angle_threshold) \
+                                        or abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
+
+                                    # if abs(min_current_angle - 90) < (90 - is_parallel_angle_threshold):  # \
+                                    # if abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
+                                    # or abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
+                                    need_subdivide = True
+                                    break
+
+                                # If pointing opposite direction, maybe sampling across a ridge
+                                # if min_current_dot < 0:
+                                #     min_principal_vector *= -1
+                                # if max_current_dot < 0:
+                                #     max_principal_vector *= -1
+
+                        # print(need_subdivide)
+
+                        if need_subdivide:
+                            next_depth = current_depth + 1
+                            half_u = (u_bound[0] + u_bound[1]) / 2
+                            half_v = (v_bound[0] + v_bound[1]) / 2
+                            # Bottom left
+                            stack.append(
+                                (next_depth, (u_bound[0], half_u), (v_bound[0], half_v))
+                            )
+                            # Bottom right
+                            stack.append(
+                                (next_depth, (half_u, u_bound[1]), (v_bound[0], half_v))
+                            )
+                            # Top Left
+                            stack.append(
+                                (next_depth, (u_bound[0], half_u), (half_v, v_bound[1]))
+                            )
+                            # Top Right
+                            stack.append(
+                                (next_depth, (half_u, u_bound[1]), (half_v, v_bound[1]))
+                            )
+                        else:
+                            width = u_bound[1] - u_bound[0]
+                            height = v_bound[1] - v_bound[0]
+                            area = width * height
+
+                            if current_depth not in area_percentages:
+                                area_percentages[current_depth] = 0
+
+                            area_percentages[current_depth] += area
+
+                            u_pixel_start = int(round(u_size * u_bound[0]))
+                            u_pixel_end = int(round(u_size * u_bound[1]))
+
+                            v_pixel_start = int(round(u_size * v_bound[0]))
+                            v_pixel_end = int(round(u_size * v_bound[1]))
+
+                            for v_pixel in range(v_pixel_start, v_pixel_end):
+                                for u_pixel in range(u_pixel_start, u_pixel_end):
+                                    r = (current_depth * 0.3) % 1.0
+                                    g = (current_depth * 0.5) % 1.0
+                                    b = (current_depth * 0.7) % 1.0
+
+                                    # vector = min_p_running_average.normalized()
+                                    # r = (vector.x + 1) / 2
+                                    # g = (vector.y + 1) / 2
+                                    # b = 0.0
+
+                                    image_buffer[u_pixel][v_pixel] = (
+                                        r, g, b, 1.0
+                                    )
+
+                    print(area_percentages)
+                    print(statistics.mean(area_percentages.values()))
+                    print(statistics.stdev(area_percentages.values()))
+
+                if False:
                     for v_pixel in range(v_size):
                         for u_pixel in range(u_size):
                             u_val = u_pixel / (u_size - 1)
@@ -440,7 +685,8 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                                     patches[patch_index], principle_curvature, u_val, v_val
                                 )
 
-                            principle_vector = mathutils.Vector((principle_direction_u, principle_direction_v))
+                            principle_vector = mathutils.Vector(
+                                (principle_direction_u, principle_direction_v))
                             principle_vector.normalize()
 
                             # if not switch_condition:
@@ -452,7 +698,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             g = ((principle_vector.y + 1) / 2)
                             b = 0.0
 
-                            image_buffer[v_pixel][u_pixel] = (
+                            image_buffer[u_pixel][v_pixel] = (
                                 r, g, b, 1.0
                             )
 
@@ -470,8 +716,8 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                                 patches[patch_index], u_val, v_val
                             )
 
-                            print(min_principal_curvature)
-                            print(max_principal_curvature)
+                            # print(min_principal_curvature)
+                            # print(max_principal_curvature)
 
                             if min_principal_curvature != 0:
                                 # Pixel is umbilic when min == max (ratio is 1 (not -1))
@@ -482,20 +728,22 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
                                 # When ratio = 1, both values the same
 
-                                target_ratio = 1
-                                # Distance clamped in range [0, 1]
-                                distance = min(abs(ratio - target_ratio), 1)
+                                # min clamps range to [0, 1]
+                                distance_ratio_to_1 = min(abs(ratio - 1), 1)
 
                                 # White pixel is umbilic (when distance = 1)
-                                val = 1 - distance
+                                when_ratio_is_1_this_is_1 = 1 - distance_ratio_to_1
 
-                                if val >= 0.9:
-                                    image_buffer[v_pixel][u_pixel] = (
-                                        val, 0.0, 0.0, 1.0
+                                if when_ratio_is_1_this_is_1 >= 0.9:
+                                    image_buffer[u_pixel][v_pixel] = (
+                                        when_ratio_is_1_this_is_1, 0.0, 0.0, 1.0
                                     )
                                 else:
-                                    image_buffer[v_pixel][u_pixel] = (
-                                        val, val, val, 1.0
+                                    image_buffer[u_pixel][v_pixel] = (
+                                        when_ratio_is_1_this_is_1,
+                                        when_ratio_is_1_this_is_1,
+                                        when_ratio_is_1_this_is_1,
+                                        1.0
                                     )
 
                 if False:
@@ -523,7 +771,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             elif umbilic_val > 400.0:
                                 b = 1.0
 
-                            image_buffer[v_pixel][u_pixel] = (
+                            image_buffer[u_pixel][v_pixel] = (
                                 r, g, b, 1.0
                             )
 
@@ -605,7 +853,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             print(value, true_val)
 
                             if value <= compare_val:
-                                image_buffer[v_pixel_pos][u_pixel_pos] = (
+                                image_buffer[u_pixel_pos][v_pixel_pos] = (
                                     0.0, 1.0, 0.0, 1.0
                                 )
 
@@ -625,10 +873,6 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             # image_buffer[u_pixel_pos][v_pixel_pos] = (
                             #     r, g, b, 1.0
                             # )
-
-                end_time = datetime.datetime.now()
-                time_lapsed = (end_time - start_time).total_seconds()
-                print(time_lapsed)
 
                 raveled_image = numpy.ravel(image_buffer)
                 image.pixels = raveled_image
@@ -654,67 +898,69 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
 
-    # Start new mesh from scratch
-    output_bmesh = bmesh.new()
+    if False:
+        # Start new mesh from scratch
+        output_bmesh = bmesh.new()
 
-    for patch in patches:
-        u_samples = 200
-        v_samples = 200
+        for patch in patches:
+            u_samples = 200
+            v_samples = 200
 
-        for v_sample in range(v_samples):
-            for u_sample in range(u_samples):
-                u_val = u_sample / (u_samples - 1)
-                v_val = v_sample / (v_samples - 1)
+            for v_sample in range(v_samples):
+                for u_sample in range(u_samples):
+                    u_val = u_sample / (u_samples - 1)
+                    v_val = v_sample / (v_samples - 1)
 
-                world_point = bezier_surface_at_parameters(patch, u_val, v_val)
+                    world_point = bezier_surface_at_parameters(patch, u_val, v_val)
 
-                min_principal_curvature = imported_math_from_sympy.min_principal_curvature(
-                    patch, u_val, v_val
-                )
+                    min_principal_vector, max_principal_vector = \
+                        min_max_principle_directions(
+                            patch, u_val, v_val
+                        )
 
-                max_principal_curvature = imported_math_from_sympy.max_principal_curvature(
-                    patch, u_val, v_val
-                )
+                    test_orthogonality = False
 
-                principle_curvature = min_principal_curvature
+                    if test_orthogonality:
+                        orthogonal_verification_value = imported_math_from_sympy.orthogonal_verification_value(
+                            patch, u_val, v_val,
+                            min_principal_vector.x, min_principal_vector.y,
+                            max_principal_vector.x, max_principal_vector.y,
+                        )
 
-                use_direction_1_condition = imported_math_from_sympy.principle_curvature_switch_condition(
-                    patch, principle_curvature, u_val, v_val
-                )
+                        is_orthogonal = abs(orthogonal_verification_value) <= 0.0001
+                        if not is_orthogonal:
+                            print("NOT ORTHOGONAL")
 
-                if use_direction_1_condition:
-                    principle_direction_u = imported_math_from_sympy.principle_direction_u_1(
-                        patch, principle_curvature, u_val, v_val
+                    vector_scale = 0.0025
+                    min_principal_vector = min_principal_vector.normalized() * vector_scale
+                    max_principal_vector = max_principal_vector.normalized() * vector_scale
+
+                    parameters_vector = mathutils.Vector((u_val, v_val))
+                    min_vector_end_parameters = parameters_vector + min_principal_vector
+                    max_vector_end_parameters = parameters_vector + max_principal_vector
+
+                    min_vector_end = bezier_surface_at_parameters(
+                        patch, min_vector_end_parameters.x, min_vector_end_parameters.y
                     )
 
-                    principle_direction_v = imported_math_from_sympy.principle_direction_v_1(
-                        patch, principle_curvature, u_val, v_val
-                    )
-                else:
-                    principle_direction_u = imported_math_from_sympy.principle_direction_u_2(
-                        patch, principle_curvature, u_val, v_val
+                    max_vector_end = bezier_surface_at_parameters(
+                        patch, max_vector_end_parameters.x, max_vector_end_parameters.y
                     )
 
-                    principle_direction_v = imported_math_from_sympy.principle_direction_v_2(
-                        patch, principle_curvature, u_val, v_val
-                    )
+                    start_vert = output_bmesh.verts.new(world_point)
 
-                principle_vector = mathutils.Vector((principle_direction_u, principle_direction_v))
-                principle_vector = principle_vector.normalized() * 0.005
+                    min_end_vert = output_bmesh.verts.new(min_vector_end)
+                    max_end_vert = output_bmesh.verts.new(max_vector_end)
 
-                vector_end_parameters = mathutils.Vector((u_val, v_val)) + principle_vector
+                    output_bmesh.edges.new((start_vert, min_end_vert))
+                    output_bmesh.edges.new((start_vert, max_end_vert))
 
-                vector_end = bezier_surface_at_parameters(patch, vector_end_parameters.x, vector_end_parameters.y)
+        output_mesh = output_object.data
+        output_bmesh.to_mesh(output_mesh)
 
-                start_vert = output_bmesh.verts.new(world_point)
-
-                end_vert = output_bmesh.verts.new(vector_end)
-
-                output_bmesh.edges.new((start_vert, end_vert))
-
-
-    output_mesh = output_object.data
-    output_bmesh.to_mesh(output_mesh)
+    end_time = datetime.datetime.now()
+    time_lapsed = (end_time - start_time).total_seconds()
+    print(time_lapsed)
 
 
 def cb_scene_update(scene):
