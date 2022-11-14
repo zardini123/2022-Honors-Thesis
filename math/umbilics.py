@@ -300,6 +300,44 @@ def main() -> int:
         (principle_curvature_symbol * F_symbol) + M_symbol
     )
 
+    # Multiple duplicate terms, could precalculate common subexpressions
+    principle_direction_1_arc_length_scalar = 1 / sympy.sqrt(
+        (
+            E_symbol * ((principle_curvature_symbol * F_symbol) + M_symbol) ** 2
+        )
+        - (
+            (2 * F_symbol * (
+                (principle_curvature_symbol * F_symbol) + M_symbol
+            ) * (
+                (principle_curvature_symbol * E_symbol) + L_symbol
+            )
+            )
+        )
+        + (
+            G_symbol * ((principle_curvature_symbol * E_symbol) + L_symbol) ** 2
+        )
+    )
+
+    principle_direction_2_arc_length_scalar = 1 / sympy.sqrt(
+        (
+            E_symbol * ((principle_curvature_symbol * G_symbol) + N_symbol) ** 2
+        )
+        - (
+            (2 * F_symbol * (
+                (principle_curvature_symbol * G_symbol) + N_symbol
+            ) * (
+                (principle_curvature_symbol * F_symbol) + M_symbol
+            )
+            )
+        )
+        + (
+            G_symbol * ((principle_curvature_symbol * F_symbol) + M_symbol) ** 2
+        )
+    )
+
+    print(sympy.pretty(principle_direction_1_arc_length_scalar))
+    print(sympy.pretty(principle_direction_2_arc_length_scalar))
+
     output_source += '\n\n' + convert_bezier_differential_expression_to_source(
         principle_direction_u_1,
         [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
@@ -330,6 +368,22 @@ def main() -> int:
         func_bernstein_polynomial_symbol,
         first_and_second_magnitude_substitutions,
         "principle_direction_v_2"
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_1_arc_length_scalar,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_1_arc_length_scalar"
+    )
+
+    output_source += '\n\n' + convert_bezier_differential_expression_to_source(
+        principle_direction_2_arc_length_scalar,
+        [points_symbol, principle_curvature_symbol, u_symbol, v_symbol],
+        func_bernstein_polynomial_symbol,
+        first_and_second_magnitude_substitutions,
+        "principle_direction_2_arc_length_scalar"
     )
 
     u_dir_1_symbol, v_dir_1_symbol, u_dir_2_symbol, v_dir_2_symbol = sympy.symbols(
