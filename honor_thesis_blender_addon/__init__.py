@@ -365,7 +365,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
     start_time = datetime.datetime.now()
 
-    if True:
+    if False:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
 
@@ -1053,13 +1053,17 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
 
-    if False:
+    if True:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
 
+        output_object.vertex_groups.clear()
+        # https://blender.stackexchange.com/a/117586
+        vertex_group = output_object.vertex_groups.new(name="Max direction").index
+        weight_layer = output_bmesh.verts.layers.deform.new("Max direction")
+
         for patch in patches:
-            u_samples = 200
-            v_samples = 200
+            u_samples = v_samples = 50
 
             for v_sample in range(v_samples):
                 for u_sample in range(u_samples):
@@ -1086,7 +1090,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         if not is_orthogonal:
                             print("NOT ORTHOGONAL")
 
-                    vector_scale = 0.0025
+                    vector_scale = 0.0025 * 3
                     min_principal_vector = min_principal_vector.normalized() * vector_scale
                     max_principal_vector = max_principal_vector.normalized() * vector_scale
 
@@ -1102,13 +1106,20 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         patch, max_vector_end_parameters.x, max_vector_end_parameters.y
                     )
 
-                    start_vert = output_bmesh.verts.new(world_point)
+                    start_vert_1 = output_bmesh.verts.new(world_point)
+                    start_vert_2 = output_bmesh.verts.new(world_point)
 
                     min_end_vert = output_bmesh.verts.new(min_vector_end)
                     max_end_vert = output_bmesh.verts.new(max_vector_end)
 
-                    output_bmesh.edges.new((start_vert, min_end_vert))
-                    output_bmesh.edges.new((start_vert, max_end_vert))
+                    start_vert_1[weight_layer][vertex_group] = 0.0
+                    min_end_vert[weight_layer][vertex_group] = 0.0
+
+                    start_vert_2[weight_layer][vertex_group] = 1.0
+                    max_end_vert[weight_layer][vertex_group] = 1.0
+
+                    output_bmesh.edges.new((start_vert_1, min_end_vert))
+                    output_bmesh.edges.new((start_vert_2, max_end_vert))
 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
