@@ -365,7 +365,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
     start_time = datetime.datetime.now()
 
-    if False:
+    if True:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
 
@@ -514,7 +514,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
                     is_parallel_angle_threshold = 20
                     too_small_size_of_bound_threshold = 1e-14
-                    max_depth = 10
+                    max_depth = 8  # 10
 
                     umbilic_threshold = 1e-10
                     is_ridge_angle_threshold = 170
@@ -686,24 +686,33 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             # print("max:", max_p_average_vector.magnitude)
 
                             ridge = False
-                            umbilic = False
+                            near_umbilic = False
+
+                            min_deviating = False
+                            max_deviating = False
 
                             # print(min_p_average_vector.magnitude)
                             # print(max_p_average_vector.magnitude)
 
+                            # Ridge is opposite direction, therefore results in near 0 magnitude
                             if min_p_average_vector.magnitude < ridge_magnitude_threshold:
                                 if max_p_average_vector.magnitude > same_direction_magnitude_threshold:
                                     ridge = True
+                                    min_deviating = True
                             else:
+                                # If less magnitude (more chaos) in min direction but not enough for being a ridge, near umbilic
                                 if min_p_average_vector.magnitude < same_direction_magnitude_threshold:
-                                    umbilic = True
+                                    near_umbilic = True
+                                    min_deviating = True
 
                             if max_p_average_vector.magnitude < ridge_magnitude_threshold:
                                 if min_p_average_vector.magnitude > same_direction_magnitude_threshold:
                                     ridge = True
+                                    max_deviating = True
                             else:
                                 if max_p_average_vector.magnitude < same_direction_magnitude_threshold:
-                                    umbilic = True
+                                    near_umbilic = True
+                                    max_deviating = True
 
                             # if not ridge and not umbilic and max_p_average_vector.magnitude < same_direction_magnitude_threshold:
                             #     need_subdivide = True
@@ -712,7 +721,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             #     print("ridge:", ridge)
                             #     print("umbilic:", umbilic)
 
-                            if ridge or umbilic:
+                            if ridge or near_umbilic:
                                 if current_depth < max_depth:
                                     need_subdivide = True
                                 else:
@@ -725,7 +734,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             half_u = (u_bound[0] + u_bound[1]) / 2
                             half_v = (v_bound[0] + v_bound[1]) / 2
 
-                            new_has_umbilic = True if umbilic else has_umbilic
+                            new_has_umbilic = True if near_umbilic else has_umbilic
                             new_has_ridge = True if ridge else has_ridge
 
                             # Bottom left
@@ -788,12 +797,20 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
                                     # if umbilic or ridge:
                                     #     r = g = b = 0.0
-                                    #
-                                    # if umbilic:
+
+                                    r = g = b = 0.0
+
+                                    # if near_umbilic:
                                     #     r = 1.0
-                                    #
+
                                     # if ridge:
                                     #     g = 1.0
+
+                                    if min_deviating:
+                                        b = 1.0
+                                        g = 0.5
+                                    if max_deviating:
+                                        r = 1.0
 
                                     image_buffer[u_pixel][v_pixel] = (
                                         r, g, b, 1.0
@@ -1053,7 +1070,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
 
-    if True:
+    if False:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
 
@@ -1063,7 +1080,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         weight_layer = output_bmesh.verts.layers.deform.new("Max direction")
 
         for patch in patches:
-            u_samples = v_samples = 50
+            u_samples = v_samples = 200  # 50
 
             for v_sample in range(v_samples):
                 for u_sample in range(u_samples):
@@ -1090,7 +1107,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         if not is_orthogonal:
                             print("NOT ORTHOGONAL")
 
-                    vector_scale = 0.0025 * 3
+                    vector_scale = 0.0025  # * 3
                     min_principal_vector = min_principal_vector.normalized() * vector_scale
                     max_principal_vector = max_principal_vector.normalized() * vector_scale
 
@@ -1106,20 +1123,26 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         patch, max_vector_end_parameters.x, max_vector_end_parameters.y
                     )
 
-                    start_vert_1 = output_bmesh.verts.new(world_point)
-                    start_vert_2 = output_bmesh.verts.new(world_point)
+                    enable_min = False
+                    enable_max = True
 
-                    min_end_vert = output_bmesh.verts.new(min_vector_end)
-                    max_end_vert = output_bmesh.verts.new(max_vector_end)
+                    if enable_min:
+                        start_vert_1 = output_bmesh.verts.new(world_point)
+                        min_end_vert = output_bmesh.verts.new(min_vector_end)
 
-                    start_vert_1[weight_layer][vertex_group] = 0.0
-                    min_end_vert[weight_layer][vertex_group] = 0.0
+                        start_vert_1[weight_layer][vertex_group] = 0.0
+                        min_end_vert[weight_layer][vertex_group] = 0.0
 
-                    start_vert_2[weight_layer][vertex_group] = 1.0
-                    max_end_vert[weight_layer][vertex_group] = 1.0
+                        output_bmesh.edges.new((start_vert_1, min_end_vert))
 
-                    output_bmesh.edges.new((start_vert_1, min_end_vert))
-                    output_bmesh.edges.new((start_vert_2, max_end_vert))
+                    if enable_max:
+                        start_vert_2 = output_bmesh.verts.new(world_point)
+                        max_end_vert = output_bmesh.verts.new(max_vector_end)
+
+                        start_vert_2[weight_layer][vertex_group] = 1.0
+                        max_end_vert[weight_layer][vertex_group] = 1.0
+
+                        output_bmesh.edges.new((start_vert_2, max_end_vert))
 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
