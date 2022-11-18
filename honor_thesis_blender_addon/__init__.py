@@ -4,6 +4,7 @@ import math
 import statistics
 import typing
 import datetime
+import dataclasses
 
 import numpy
 
@@ -345,6 +346,271 @@ def min_max_principle_directions(patch, u_val, v_val, arc_length_scaled=False):
     return (min_principal_vector, max_principal_vector)
 
 
+def add_value_to_dict(dictionary, key, value_to_add):
+    if key not in dictionary:
+        dictionary[key] = 0
+
+    dictionary[key] += value_to_add
+
+def parameter_to_zone_index(parameter_val, depth):
+    # 4 quadrants per depth
+    # 2 splits per axis
+    zone_scalar = 2 ** depth
+
+    return int(parameter_val * zone_scalar)
+
+def zone_edge_hash(pos_1, pos_2, depth):
+    if pos_2 < pos_1:
+        pos_1, pos_2 = pos_2, pos_1
+
+    return (
+        parameter_to_zone_index(pos_1[0], depth),
+        parameter_to_zone_index(pos_2[0], depth),
+        parameter_to_zone_index(pos_1[1], depth),
+        parameter_to_zone_index(pos_2[1], depth)
+    )
+
+
+@dataclasses.dataclass
+class Zone:
+    u_bounds: tuple[float, float]
+    v_bounds: tuple[float, float]
+    depth: int
+    near_umbilic: bool
+    has_ridge: bool
+    zero_both_ways: bool
+    min_deviating: bool
+    max_deviating: bool
+    min_average_vector: mathutils.Vector
+    max_average_vector: mathutils.Vector
+
+    def get_width(self) -> float:
+        return self.u_bounds[1] - self.u_bounds[0]
+
+    def get_height(self) -> float:
+        return self.v_bounds[1] - self.v_bounds[0]
+
+    def get_area(self) -> float:
+        return self.get_width() * self.get_height()
+
+    def rasterize_to_image_buffer(self, image_buffer, image_size) -> None:
+        # Add to texture
+        u_pixel_start = int(round(image_size[0] * self.u_bounds[0]))
+        u_pixel_end = int(round(image_size[0] * self.u_bounds[1]))
+
+        v_pixel_start = int(round(image_size[1] * self.v_bounds[0]))
+        v_pixel_end = int(round(image_size[1] * self.v_bounds[1]))
+
+        for v_pixel in range(v_pixel_start, v_pixel_end):
+            for u_pixel in range(u_pixel_start, u_pixel_end):
+                r = (self.depth * 0.3) % 1.0
+                g = (self.depth * 0.5) % 1.0
+                b = (self.depth * 0.7) % 1.0
+
+                # vector = min_p_average_vector.normalized()
+                # vector = max_p_average_vector.normalized()
+                # r = (vector.x + 1) / 2
+                # g = (vector.y + 1) / 2
+                # b = 0.0
+
+                # if is_umbilic:
+                #     r = 1.0
+                #     g = b = 0.0
+                # else:
+                #     r = g = b = 0.0
+                #
+                # if is_ridge:
+                #     g = 1.0
+
+                # if umbilic or ridge:
+                #     r = g = b = 0.0
+
+                # r = g = b = 0.0
+
+                # if near_umbilic:
+                #     r = 1.0
+
+                # if self.has_ridge:
+                #     g = 1.0
+                #
+                # if self.min_deviating:
+                #     b = 1.0
+                #     # g = 0.5
+                # if self.max_deviating:
+                #     r = 1.0
+
+                image_buffer[u_pixel][v_pixel] = (
+                    r, g, b, 1.0
+                )
+
+
+def equal_curvature_zones_recursion(
+    bezier_patch_control_points,
+    max_depth: int,
+    same_direction_magnitude_threshold: float,
+    ridge_magnitude_threshold: float,
+    near_zero_threshold: float
+):
+    start_depth = 0
+
+    stack = []
+    stack.append(
+        (start_depth, (0, 1), (0, 1))
+    )
+
+    num_samples_per_axis = 2
+
+    output_zones = []
+
+    while len(stack) != 0:
+        stack_tuple = stack.pop()
+        current_depth, u_bounds, v_bounds = stack_tuple
+
+        if current_depth > 1000:
+            print("ERROR: MAX STACK DEPTH HIT")
+            break
+
+        # Determine if principle direction orientations are generally
+        #   in the same orientation
+
+        need_subdivide = False
+
+        min_p_summed_vectors = mathutils.Vector((0, 0))
+        max_p_summed_vectors = mathutils.Vector((0, 0))
+        count = 0
+
+        # min_principle_directions = set()
+        # max_principle_directions = set()
+
+        # min_previous_vector = None
+        # max_previous_vector = None
+
+        for v_index in range(num_samples_per_axis):
+            for u_index in range(num_samples_per_axis):
+                u_pre = u_index / (num_samples_per_axis - 1)
+                v_pre = v_index / (num_samples_per_axis - 1)
+
+                u = lerp(u_bounds[0], u_bounds[1], u_pre)
+                v = lerp(v_bounds[0], v_bounds[1], v_pre)
+
+                min_principal_vector, max_principal_vector = \
+                    min_max_principle_directions(
+                        bezier_patch_control_points, u, v
+                    )
+
+                if False:
+                    world_point = bezier_surface_at_parameters(
+                        bezier_patch_control_points, u, v
+                    )
+                    world_min_principal_vector = bezier_surface_at_parameters(
+                        bezier_patch_control_points,
+                        u + min_principal_vector.x,
+                        v + min_principal_vector.y
+                    )
+                    world_max_principal_vector = bezier_surface_at_parameters(
+                        bezier_patch_control_points,
+                        u + max_principal_vector.x,
+                        v + max_principal_vector.y
+                    )
+
+                    min_principal_vector = world_min_principal_vector - world_point
+                    max_principal_vector = world_max_principal_vector - world_point
+
+                min_p_summed_vectors += min_principal_vector.normalized()
+                max_p_summed_vectors += max_principal_vector.normalized()
+
+                count += 1
+
+        min_p_average_vector = min_p_summed_vectors / count
+        max_p_average_vector = max_p_summed_vectors / count
+
+        # print("min:", min_p_average_vector.magnitude)
+        # print("max:", max_p_average_vector.magnitude)
+
+        has_ridge = False
+        near_umbilic = False
+        zero_both_ways = False
+
+        min_deviating = False
+        max_deviating = False
+
+        # print(min_p_average_vector.magnitude)
+        # print(max_p_average_vector.magnitude)
+
+        # Ridge is opposite direction, therefore results in near 0 magnitude
+        if min_p_average_vector.magnitude < ridge_magnitude_threshold:
+            if max_p_average_vector.magnitude > same_direction_magnitude_threshold:
+                has_ridge = True
+                min_deviating = True
+        else:
+            # If less magnitude (more chaos) in min direction but not enough for being a ridge, near umbilic
+            if min_p_average_vector.magnitude < same_direction_magnitude_threshold:
+                near_umbilic = True
+                min_deviating = True
+
+        if max_p_average_vector.magnitude < ridge_magnitude_threshold:
+            if min_p_average_vector.magnitude > same_direction_magnitude_threshold:
+                has_ridge = True
+                max_deviating = True
+        else:
+            if max_p_average_vector.magnitude < same_direction_magnitude_threshold:
+                near_umbilic = True
+                max_deviating = True
+
+        if min_p_average_vector.magnitude < near_zero_threshold \
+                and max_p_average_vector.magnitude < near_zero_threshold:
+            zero_both_ways = True
+
+        # if ridge and not umbilic:
+        #     print("ridge:", ridge)
+        #     print("umbilic:", umbilic)
+
+        if has_ridge or near_umbilic or zero_both_ways:
+            if current_depth < max_depth:
+                need_subdivide = True
+            # else:
+            #     current_depth += 1
+
+        if not need_subdivide:
+            output_zones.append(
+                Zone(
+                    u_bounds,
+                    v_bounds,
+                    current_depth,
+                    near_umbilic,
+                    has_ridge,
+                    zero_both_ways,
+                    min_deviating,
+                    max_deviating,
+                    min_p_average_vector,
+                    max_p_average_vector
+                )
+            )
+            continue
+
+        next_depth = current_depth + 1
+        half_u = (u_bounds[0] + u_bounds[1]) / 2
+        half_v = (v_bounds[0] + v_bounds[1]) / 2
+
+        # Bottom left
+        stack.append(
+            (next_depth, (u_bounds[0], half_u), (v_bounds[0], half_v))
+        )
+        # Bottom right
+        stack.append(
+            (next_depth, (half_u, u_bounds[1]), (v_bounds[0], half_v))
+        )
+        # Top Left
+        stack.append(
+            (next_depth, (u_bounds[0], half_u), (half_v, v_bounds[1]))
+        )
+        # Top Right
+        stack.append(
+            (next_depth, (half_u, u_bounds[1]), (half_v, v_bounds[1]))
+        )
+
+    return output_zones
+
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: bpy.types.Object):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
 
@@ -378,117 +644,120 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         # uv_layers = ensure_uv_layers(output_bmesh.loops.layers.uv, num_patches)
         # print(uv_layers)
 
-        uv_layer = output_bmesh.loops.layers.uv.verify()
+        # Create grid mesh
+        if True:
+            uv_layer = output_bmesh.loops.layers.uv.verify()
 
-        for patch_index, patch_control_points in enumerate(patches):
-            def generator_function(u, v):
-                return bezier_surface_at_parameters(patch_control_points, u, v)
+            for patch_index, patch_control_points in enumerate(patches):
+                def generator_function(u, v):
+                    return bezier_surface_at_parameters(patch_control_points, u, v)
 
-            # @TODO: Each grid mesh is not connected, new verticies are made for
-            #   each bordering patch
-            added_verticies_references, added_faces_references = \
-                utilities.add_grid_mesh_to_bmesh(
-                    output_bmesh, generator_function, u_num_verts, v_num_verts
-                )
+                # @TODO: Each grid mesh is not connected, new verticies are made for
+                #   each bordering patch
+                added_verticies_references, added_faces_references = \
+                    utilities.add_grid_mesh_to_bmesh(
+                        output_bmesh, generator_function, u_num_verts, v_num_verts
+                    )
 
-            # Create UV Map for patch going from 0 to 1 on both U and V for all
-            #   patches
-            for vertex_index, vertex_reference in enumerate(added_verticies_references):
-                v_index = vertex_index % u_num_verts
-                u_index = vertex_index // u_num_verts
+                # Create UV Map for patch going from 0 to 1 on both U and V for all
+                #   patches
+                for vertex_index, vertex_reference in enumerate(added_verticies_references):
+                    v_index = vertex_index % u_num_verts
+                    u_index = vertex_index // u_num_verts
 
-                u_pos = u_index / (u_num_verts - 1)
-                v_pos = v_index / (v_num_verts - 1)
+                    u_pos = u_index / (u_num_verts - 1)
+                    v_pos = v_index / (v_num_verts - 1)
 
-                for loop in vertex_reference.link_loops:
-                    # @TODO: Why does array access on a loop for uv work??
-                    loop[uv_layer].uv = mathutils.Vector((u_pos, v_pos))
+                    for loop in vertex_reference.link_loops:
+                        # @TODO: Why does array access on a loop for uv work??
+                        loop[uv_layer].uv = mathutils.Vector((u_pos, v_pos))
 
-            # Set material index for patch for seperating each patch's material
-            for face in added_faces_references:
-                face.material_index = patch_index
+                # Set material index for patch for seperating each patch's material
+                for face in added_faces_references:
+                    face.material_index = patch_index
 
-        # Ensure adequate number of material slots
-        num_patches = len(patches)
-        starting_num_materials = len(output_object.data.materials)
-        for i in range(starting_num_materials, num_patches):
-            output_object.data.materials.append(None)
+        # Setup material and image data blocks
+        if True:
+            # Ensure adequate number of material slots
+            num_patches = len(patches)
+            starting_num_materials = len(output_object.data.materials)
+            for i in range(starting_num_materials, num_patches):
+                output_object.data.materials.append(None)
 
-        patch_prefix = "Patch_"
+            patch_prefix = "Patch_"
 
-        u_image_size = 1024
-        v_image_size = 1024
+            u_image_size = 1024
+            v_image_size = 1024
 
-        # Ensure adequate number of image data blocks for each patch
-        images = [None] * num_patches
-        for image_name, image in bpy.data.images.items():
-            if patch_prefix in image_name:
-                if image.size[0] != u_image_size and image.size[1] != v_image_size:
-                    bpy.data.images.remove(image)
-                else:
-                    index = int(image_name.replace(patch_prefix, ""))
-                    images[index] = image
+            # Ensure adequate number of image data blocks for each patch
+            images = [None] * num_patches
+            for image_name, image in bpy.data.images.items():
+                if patch_prefix in image_name:
+                    if image.size[0] != u_image_size and image.size[1] != v_image_size:
+                        bpy.data.images.remove(image)
+                    else:
+                        index = int(image_name.replace(patch_prefix, ""))
+                        images[index] = image
 
-        for image_index, image in enumerate(images):
-            if image is None:
-                images[image_index] = bpy.data.images.new(
-                    f"{patch_prefix}{image_index}", u_image_size, v_image_size
-                )
+            for image_index, image in enumerate(images):
+                if image is None:
+                    images[image_index] = bpy.data.images.new(
+                        f"{patch_prefix}{image_index}", u_image_size, v_image_size
+                    )
 
-        # Create new material for all material slots non-ocupied
-        #   that has the image for the patch UV-mapped.
-        for patch_index, material in enumerate(output_object.data.materials):
-            # Ensure material slots have a material present
-            if material is None:
-                new_material = bpy.data.materials.new(
-                    f"{patch_prefix}{patch_index}"
-                )
+            # Create new material for all material slots non-ocupied
+            #   that has the image for the patch UV-mapped.
+            for patch_index, material in enumerate(output_object.data.materials):
+                # Ensure material slots have a material present
+                if material is None:
+                    new_material = bpy.data.materials.new(
+                        f"{patch_prefix}{patch_index}"
+                    )
 
-                # Create material with texture from Python:
-                #   https://blender.stackexchange.com/a/240372/76575
-                new_material.use_nodes = True
+                    # Create material with texture from Python:
+                    #   https://blender.stackexchange.com/a/240372/76575
+                    new_material.use_nodes = True
 
-                node_tree = new_material.node_tree
-                nodes = new_material.node_tree.nodes
-                nodes.clear()
+                    node_tree = new_material.node_tree
+                    nodes = new_material.node_tree.nodes
+                    nodes.clear()
 
-                node_uv_map = nodes.new(type='ShaderNodeUVMap')
-                node_uv_map.location = (-800, 0)
+                    node_uv_map = nodes.new(type='ShaderNodeUVMap')
+                    node_uv_map.location = (-800, 0)
 
-                node_texture = nodes.new('ShaderNodeTexImage')
-                node_texture.image = images[patch_index]
-                node_texture.location = (-400, 0)
+                    node_texture = nodes.new('ShaderNodeTexImage')
+                    node_texture.image = images[patch_index]
+                    node_texture.location = (-400, 0)
 
-                node_diffuse = nodes.new(type='ShaderNodeBsdfDiffuse')
-                node_diffuse.location = (0, 0)
+                    node_diffuse = nodes.new(type='ShaderNodeBsdfDiffuse')
+                    node_diffuse.location = (0, 0)
 
-                node_output = nodes.new(type='ShaderNodeOutputMaterial')
-                node_output.location = (400, 0)
+                    node_output = nodes.new(type='ShaderNodeOutputMaterial')
+                    node_output.location = (400, 0)
 
-                links = new_material.node_tree.links
-                link = links.new(node_uv_map.outputs["UV"], node_texture.inputs["Vector"])
-                link = links.new(node_texture.outputs["Color"], node_diffuse.inputs["Color"])
-                link = links.new(node_diffuse.outputs["BSDF"], node_output.inputs["Surface"])
+                    links = new_material.node_tree.links
+                    link = links.new(node_uv_map.outputs["UV"], node_texture.inputs["Vector"])
+                    link = links.new(node_texture.outputs["Color"], node_diffuse.inputs["Color"])
+                    link = links.new(node_diffuse.outputs["BSDF"], node_output.inputs["Surface"])
 
-                output_object.data.materials[patch_index] = new_material
-                material = new_material
+                    output_object.data.materials[patch_index] = new_material
+                    material = new_material
 
-            # Ignore materials who dont use nodes
-            # if not material.use_nodes:
-            #     break
+                # Ignore materials who dont use nodes
+                # if not material.use_nodes:
+                #     break
 
-            # found_image_node = False
-            # for node in material.node_tree.nodes:
-            #     if node.name == "Image Texture":
-            #         found_image_node = True
-            #         break
+                # found_image_node = False
+                # for node in material.node_tree.nodes:
+                #     if node.name == "Image Texture":
+                #         found_image_node = True
+                #         break
 
-            # if not found_image_node:
-            #     texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
-            #     texImage.image
+                # if not found_image_node:
+                #     texImage = material.node_tree.nodes.new('ShaderNodeTexImage')
+                #     texImage.image
 
-        # start_time = datetime.datetime.now()
-
+        # Create image
         if True:
             image_buffer = numpy.zeros((v_image_size, u_image_size, 4))
 
@@ -504,321 +773,25 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                 u_size, v_size = image.size
                 num_channels = image.channels
 
+                # Recursive method
                 if True:
-                    start_depth = 0
+                    out = equal_curvature_zones_recursion(patches[patch_index], 10, 0.999, 0.6, 0.5)
 
-                    stack = []
-                    stack.append(
-                        (start_depth, False, False, (0, 1), (0, 1))
-                    )
-
-                    is_parallel_angle_threshold = 20
-                    too_small_size_of_bound_threshold = 1e-14
-                    max_depth = 8  # 10
-
-                    umbilic_threshold = 1e-10
-                    is_ridge_angle_threshold = 170
-
-                    same_direction_magnitude_threshold = 0.999
-                    ridge_magnitude_threshold = 0.6
-
-                    num_samples_per_axis = 2
+                    print("num zones:", len(out))
 
                     area_percentages = {}
 
-                    depth = []
+                    for zone in out:
+                        add_value_to_dict(area_percentages, zone.depth, zone.get_area())
 
-                    while len(stack) != 0:
-                        stack_tuple = stack.pop()
-                        current_depth, has_umbilic, has_ridge, u_bound, v_bound = stack_tuple
+                        zone.rasterize_to_image_buffer(image_buffer, image.size)
 
-                        if abs(u_bound[0] - u_bound[1]) < too_small_size_of_bound_threshold:
-                            continue
+                    print(dict(sorted(area_percentages.items(), key=lambda item: item[1])))
+                    print("area sum:", sum(area_percentages.values()))
 
-                        if abs(v_bound[0] - v_bound[1]) < too_small_size_of_bound_threshold:
-                            continue
-
-                        if current_depth > 1000:
-                            print("ERROR: MAX STACK DEPTH HIT")
-                            stack = []
-                            break
-
-                        # print(stack_tuple)
-
-                        # Determine if principle direction orientations are generally
-                        #   in the same orientation
-
-                        min_p_running_average = None
-                        max_p_running_average = None
-
-                        need_subdivide = False
-                        is_umbilic = False
-                        is_ridge = False
-
-                        min_p_summed_vectors = mathutils.Vector((0, 0))
-                        max_p_summed_vectors = mathutils.Vector((0, 0))
-                        count = 0
-
-                        min_principle_directions = set()
-                        max_principle_directions = set()
-
-                        min_previous_vector = None
-                        max_previous_vector = None
-
-                        for v_index in range(num_samples_per_axis):
-                            if need_subdivide:
-                                break
-
-                            for u_index in range(num_samples_per_axis):
-                                u_pre = u_index / (num_samples_per_axis - 1)
-                                v_pre = v_index / (num_samples_per_axis - 1)
-
-                                u = lerp(u_bound[0], u_bound[1], u_pre)
-                                v = lerp(v_bound[0], v_bound[1], v_pre)
-
-                                # print(u, v)
-
-                                umbilic_val = imported_math_from_sympy.umbilic(
-                                    patches[patch_index], u, v
-                                )
-
-                                # print("umbilic val:", umbilic_val)
-
-                                if umbilic_val <= 0.1:
-                                    is_umbilic = True
-
-                                # if umbilic_val <= umbilic_threshold:
-                                #     print("umbilic:", current_depth, umbilic_val)
-                                #     need_subdivide = False
-                                #     is_umbilic = True
-                                #     break
-
-                                min_principal_vector, max_principal_vector = \
-                                    min_max_principle_directions(
-                                        patches[patch_index], u, v
-                                    )
-
-                                # world_point = bezier_surface_at_parameters(
-                                #     patches[patch_index], u, v
-                                # )
-                                # world_min_principal_vector = bezier_surface_at_parameters(
-                                #     patches[patch_index],
-                                #     u + min_principal_vector.x,
-                                #     v + min_principal_vector.y
-                                # )
-                                # world_max_principal_vector = bezier_surface_at_parameters(
-                                #     patches[patch_index],
-                                #     u + max_principal_vector.x,
-                                #     v + max_principal_vector.y
-                                # )
-                                #
-                                # min_principal_vector = world_min_principal_vector - world_point
-                                # max_principal_vector = world_max_principal_vector - world_point
-
-                                if True:
-                                    min_principle_directions.add(
-                                        min_principal_vector.normalized().freeze())
-                                    max_principle_directions.add(
-                                        max_principal_vector.normalized().freeze())
-
-                                    min_p_summed_vectors += min_principal_vector.normalized()
-                                    max_p_summed_vectors += max_principal_vector.normalized()
-
-                                    count += 1
-
-                                # if True:
-                                #     if min_previous_vector is None:
-                                #         min_previous_vector = min_principal_vector
-                                #
-                                #     if max_previous_vector is None:
-                                #         max_previous_vector = max_principal_vector
-
-                                if False:
-                                    if count == 0:
-                                        min_p_running_average = min_principal_vector
-                                        max_p_running_average = max_principal_vector
-
-                                        count += 1
-                                        continue
-
-                                    rad_to_degree = 360 / (2 * math.pi)
-
-                                    min_current_angle = min_p_running_average.angle(
-                                        min_principal_vector) * rad_to_degree
-                                    max_current_angle = max_p_running_average.angle(
-                                        max_principal_vector) * rad_to_degree
-
-                                    # print(min_current_angle, max_current_angle)
-
-                                    # Vector not parallel enough
-                                    # -90, 90 parellel
-                                    # 20 degree threshold
-                                    # [-90, -70] and [70, 90]
-                                    # If in [0, 70] range, is not parallel enough
-
-                                    if min_current_angle > is_ridge_angle_threshold \
-                                            or max_current_angle > is_ridge_angle_threshold:
-                                        is_ridge = True
-
-                                    if current_depth < max_depth:
-                                        # if min_current_angle > is_parallel_angle_threshold \
-                                        #         or max_current_angle > is_parallel_angle_threshold:
-                                        if abs(min_current_angle - 90) < (90 - is_parallel_angle_threshold) \
-                                                or abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
-
-                                            # if abs(min_current_angle - 90) < (90 - is_parallel_angle_threshold):  # \
-                                            # if abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
-                                            # or abs(max_current_angle - 90) < (90 - is_parallel_angle_threshold):
-                                            need_subdivide = True
-                                            break
-
-                                    # If pointing opposite direction, maybe sampling across a ridge
-                                    # if min_current_dot < 0:
-                                    #     min_principal_vector *= -1
-                                    # if max_current_dot < 0:
-                                    #     max_principal_vector *= -1
-
-                        if True:
-                            min_p_average_vector = min_p_summed_vectors / count
-                            max_p_average_vector = max_p_summed_vectors / count
-
-                            # print("min:", min_p_average_vector.magnitude)
-                            # print("max:", max_p_average_vector.magnitude)
-
-                            ridge = False
-                            near_umbilic = False
-
-                            min_deviating = False
-                            max_deviating = False
-
-                            # print(min_p_average_vector.magnitude)
-                            # print(max_p_average_vector.magnitude)
-
-                            # Ridge is opposite direction, therefore results in near 0 magnitude
-                            if min_p_average_vector.magnitude < ridge_magnitude_threshold:
-                                if max_p_average_vector.magnitude > same_direction_magnitude_threshold:
-                                    ridge = True
-                                    min_deviating = True
-                            else:
-                                # If less magnitude (more chaos) in min direction but not enough for being a ridge, near umbilic
-                                if min_p_average_vector.magnitude < same_direction_magnitude_threshold:
-                                    near_umbilic = True
-                                    min_deviating = True
-
-                            if max_p_average_vector.magnitude < ridge_magnitude_threshold:
-                                if min_p_average_vector.magnitude > same_direction_magnitude_threshold:
-                                    ridge = True
-                                    max_deviating = True
-                            else:
-                                if max_p_average_vector.magnitude < same_direction_magnitude_threshold:
-                                    near_umbilic = True
-                                    max_deviating = True
-
-                            # if not ridge and not umbilic and max_p_average_vector.magnitude < same_direction_magnitude_threshold:
-                            #     need_subdivide = True
-
-                            # if ridge and not umbilic:
-                            #     print("ridge:", ridge)
-                            #     print("umbilic:", umbilic)
-
-                            if ridge or near_umbilic:
-                                if current_depth < max_depth:
-                                    need_subdivide = True
-                                else:
-                                    current_depth += 1
-
-                        # print(need_subdivide)
-
-                        if need_subdivide:
-                            next_depth = current_depth + 1
-                            half_u = (u_bound[0] + u_bound[1]) / 2
-                            half_v = (v_bound[0] + v_bound[1]) / 2
-
-                            new_has_umbilic = True if near_umbilic else has_umbilic
-                            new_has_ridge = True if ridge else has_ridge
-
-                            # Bottom left
-                            stack.append(
-                                (next_depth, new_has_umbilic, new_has_ridge,
-                                 (u_bound[0], half_u), (v_bound[0], half_v))
-                            )
-                            # Bottom right
-                            stack.append(
-                                (next_depth, new_has_umbilic, new_has_ridge,
-                                 (half_u, u_bound[1]), (v_bound[0], half_v))
-                            )
-                            # Top Left
-                            stack.append(
-                                (next_depth, new_has_umbilic, new_has_ridge,
-                                 (u_bound[0], half_u), (half_v, v_bound[1]))
-                            )
-                            # Top Right
-                            stack.append(
-                                (next_depth, new_has_umbilic, new_has_ridge,
-                                 (half_u, u_bound[1]), (half_v, v_bound[1]))
-                            )
-                        else:
-                            width = u_bound[1] - u_bound[0]
-                            height = v_bound[1] - v_bound[0]
-                            area = width * height
-
-                            if current_depth not in area_percentages:
-                                area_percentages[current_depth] = 0
-
-                            area_percentages[current_depth] += area
-                            depth.append(current_depth)
-
-                            u_pixel_start = int(round(u_size * u_bound[0]))
-                            u_pixel_end = int(round(u_size * u_bound[1]))
-
-                            v_pixel_start = int(round(u_size * v_bound[0]))
-                            v_pixel_end = int(round(u_size * v_bound[1]))
-
-                            for v_pixel in range(v_pixel_start, v_pixel_end):
-                                for u_pixel in range(u_pixel_start, u_pixel_end):
-                                    r = (current_depth * 0.3) % 1.0
-                                    g = (current_depth * 0.5) % 1.0
-                                    b = (current_depth * 0.7) % 1.0
-
-                                    # vector = min_p_average_vector.normalized()
-                                    # vector = max_p_average_vector.normalized()
-                                    # r = (vector.x + 1) / 2
-                                    # g = (vector.y + 1) / 2
-                                    # b = 0.0
-
-                                    # if is_umbilic:
-                                    #     r = 1.0
-                                    #     g = b = 0.0
-                                    # else:
-                                    #     r = g = b = 0.0
-                                    #
-                                    # if is_ridge:
-                                    #     g = 1.0
-
-                                    # if umbilic or ridge:
-                                    #     r = g = b = 0.0
-
-                                    r = g = b = 0.0
-
-                                    # if near_umbilic:
-                                    #     r = 1.0
-
-                                    # if ridge:
-                                    #     g = 1.0
-
-                                    if min_deviating:
-                                        b = 1.0
-                                        g = 0.5
-                                    if max_deviating:
-                                        r = 1.0
-
-                                    image_buffer[u_pixel][v_pixel] = (
-                                        r, g, b, 1.0
-                                    )
-
-                    print(area_percentages)
-                    print(statistics.mean(area_percentages.values()))
-                    print(statistics.stdev(area_percentages.values()))
+                    if len(area_percentages) >= 2:
+                        print(statistics.mean(area_percentages.values()))
+                        print(statistics.stdev(area_percentages.values()))
 
                 if False:
                     for v_pixel in range(v_size):
@@ -1123,7 +1096,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         patch, max_vector_end_parameters.x, max_vector_end_parameters.y
                     )
 
-                    enable_min = False
+                    enable_min = True
                     enable_max = True
 
                     if enable_min:
