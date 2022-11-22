@@ -3,6 +3,23 @@ import mathutils
 import typing
 
 
+def rasterize_point(image_buffer, point: mathutils.Vector, image_size, color):
+    x = int(round(point.x * image_size[0]))
+    y = int(round(point.y * image_size[1]))
+
+    if x >= image_size[0] or x < 0:
+        return
+
+    if y >= image_size[1] or y < 0:
+        return
+
+    image_buffer[x][y] = color
+
+
+def get_arbitrary_element_of_set(the_set):
+    return next(iter(the_set))
+
+
 def get_3x3_patches_from_sharp_border(mesh: bmesh.types.BMesh) -> list[set[bmesh.types.BMesh]]:
     """Find patch of 3x3 quads with 16 verticies_coordinates in control_bmesh defined by a sharp border."""
     output_patches = []

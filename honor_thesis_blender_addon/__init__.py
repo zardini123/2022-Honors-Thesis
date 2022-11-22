@@ -1,12 +1,23 @@
 """2022 Honors Thesis Blender Addon."""
 
+# How do I type hint a method with the type of the enclosing class?
+#   https://stackoverflow.com/a/33533514
+from __future__ import annotations
+
+# Standard imports
+
 import math
 import statistics
 import typing
 import datetime
 import dataclasses
+import copy
+import itertools
+import enum
 
 import numpy
+
+# Blender imports
 
 import bpy
 import bmesh
@@ -25,9 +36,15 @@ if 'utilities' in globals():
     importlib.reload(utilities)
 if 'imported_math_from_sympy' in globals():
     importlib.reload(imported_math_from_sympy)
+if 'math_extensions' in globals():
+    importlib.reload(math_extensions)
+if 'non_dependent_utilities' in globals():
+    importlib.reload(non_dependent_utilities)
 
 from . import utilities
 from . import imported_math_from_sympy
+from . import math_extensions
+from . import non_dependent_utilities
 
 bl_info = {
     "name": "2022 Honors Thesis",
@@ -42,8 +59,6 @@ bl_info = {
     "support": "COMMUNITY",
     "category": "Mesh",
 }
-
-RAD_TO_DEGREE = 360 / (2 * math.pi)
 
 
 def add_object(self, context):
@@ -120,45 +135,6 @@ class OBJECT_OT_add_bezier_surface(Operator, AddObjectHelper):
         return {'FINISHED'}
 
 
-def bernstein_polynomial(degree, index, parameter):
-    # Binomial args: math.comb(n, k)
-    return math.comb(degree, index) \
-        * (parameter ** index) \
-        * ((1 - parameter) ** (degree - index))
-
-
-def bezier_surface_at_parameters(control_points, u, v):
-    """Equation sourced from: https://en.wikipedia.org/wiki/Bézier_surface"""
-
-    u_num_control_points = len(control_points[0])
-    v_num_control_points = len(control_points)
-
-    u_degree = u_num_control_points - 1
-    v_degree = v_num_control_points - 1
-
-    output_point = None
-    weight_sum = 0
-    for i in range(u_degree + 1):
-        for j in range(v_degree + 1):
-            b_u = bernstein_polynomial(u_degree, i, u)
-            b_v = bernstein_polynomial(v_degree, j, v)
-            weight = b_u * b_v
-
-            weight_sum += weight
-
-            addition_expr = weight * control_points[j][i]
-
-            if output_point is None:
-                output_point = addition_expr
-            else:
-                output_point += addition_expr
-
-    # Partition of Unity property: https://pages.mtu.edu/~shene/COURSES/cs3621/NOTES/surface/bezier-properties.html
-    assert abs(weight_sum - 1) <= 0.00000001
-
-    return output_point
-
-
 def add_value_to_array(array, value):
     return [element + value for element in array]
 
@@ -187,202 +163,59 @@ def ensure_uv_layers(
     return output_uv_layers
 
 
-def umbilic_gradient_descent(
-    start_parameters: mathutils.Vector,
-    control_points,
-    iterations=1000,
-    learning_rate=1e-5,
-    stopping_threshold=1e-6
-):
-    previous_parameters = start_parameters
-    previous_value = imported_math_from_sympy.umbilic(
-        control_points,
-        start_parameters.x,
-        start_parameters.y
-    )
-
-    for iteration in range(iterations):
-        u_derivative = imported_math_from_sympy.umbilic_u_derivative(
-            control_points,
-            previous_parameters.x,
-            previous_parameters.y
-        )
-        v_derivative = imported_math_from_sympy.umbilic_v_derivative(
-            control_points,
-            previous_parameters.x,
-            previous_parameters.y
-        )
-
-        gradient = mathutils.Vector((
-            u_derivative,
-            v_derivative,
-        ))
-
-        # print(gradient.magnitude)
-        # print(gradient.normalized())
-
-        scaled_gradient = gradient
-
-        # print(previous_parameters)
-
-        current_parameters = previous_parameters - (learning_rate * gradient)
-
-        if current_parameters.x < 0 or current_parameters.x > 1 or current_parameters.y < 0 or current_parameters.y > 1:
-            return False, previous_value, previous_parameters
-
-        # print(current_parameters)
-
-        current_value = imported_math_from_sympy.umbilic(
-            control_points,
-            current_parameters.x,
-            current_parameters.y
-        )
-
-        if abs(current_value - previous_value) <= stopping_threshold:
-            return True, current_value, current_parameters
-
-        previous_parameters = current_parameters
-        previous_value = current_value
-
-    return False, current_value, current_parameters
-
-
-def lerp(a, b, t):
-    """From: https://en.wikipedia.org/wiki/Linear_interpolation"""
-    return a + t * (b - a)
-
-
-def principle_direction_ret_condition(principle_curvature, patch, u_val, v_val):
-    use_direction_1_condition = imported_math_from_sympy.principle_curvature_switch_condition(
-        patch, principle_curvature, u_val, v_val
-    )
-
-    if use_direction_1_condition:
-        principle_direction_u = imported_math_from_sympy.principle_direction_u_1(
-            patch, principle_curvature, u_val, v_val
-        )
-
-        principle_direction_v = imported_math_from_sympy.principle_direction_v_1(
-            patch, principle_curvature, u_val, v_val
-        )
-    else:
-        principle_direction_u = imported_math_from_sympy.principle_direction_u_2(
-            patch, principle_curvature, u_val, v_val
-        )
-
-        principle_direction_v = imported_math_from_sympy.principle_direction_v_2(
-            patch, principle_curvature, u_val, v_val
-        )
-
-    principle_vector = mathutils.Vector(
-        (principle_direction_u, principle_direction_v))
-
-    return use_direction_1_condition, principle_vector
-
-
-def principle_direction(principle_curvature, patch, u_val, v_val):
-    _, principle_vector = principle_direction_ret_condition(
-        principle_curvature, patch, u_val, v_val
-    )
-
-    return principle_vector
-
-
-def principle_direction_arc_length_scaled(principle_curvature, patch, u_val, v_val):
-    use_direction_1_condition, principle_vector = principle_direction_ret_condition(
-        principle_curvature, patch, u_val, v_val
-    )
-
-    if use_direction_1_condition:
-        scalar = imported_math_from_sympy.principle_direction_1_arc_length_scalar(
-            patch, principle_curvature, u_val, v_val
-        )
-    else:
-        scalar = imported_math_from_sympy.principle_direction_2_arc_length_scalar(
-            patch, principle_curvature, u_val, v_val
-        )
-
-    return principle_vector * scalar
-
-
-def min_principle_direction(patch, u_val, v_val, arc_length_scaled=False):
-    min_principal_curvature = imported_math_from_sympy.min_principal_curvature(
-        patch, u_val, v_val
-    )
-
-    if arc_length_scaled:
-        min_principal_vector = principle_direction_arc_length_scaled(
-            min_principal_curvature, patch, u_val, v_val
-        )
-    else:
-        min_principal_vector = principle_direction(
-            min_principal_curvature, patch, u_val, v_val
-        )
-
-    return min_principal_vector
-
-
-def max_principle_direction(patch, u_val, v_val, arc_length_scaled=False):
-    max_principal_curvature = imported_math_from_sympy.max_principal_curvature(
-        patch, u_val, v_val
-    )
-
-    if arc_length_scaled:
-        max_principal_vector = principle_direction_arc_length_scaled(
-            max_principal_curvature, patch, u_val, v_val
-        )
-    else:
-        max_principal_vector = principle_direction(
-            max_principal_curvature, patch, u_val, v_val
-        )
-
-    return max_principal_vector
-
-
-def min_max_principle_directions(patch, u_val, v_val, arc_length_scaled=False):
-    min_principal_vector = min_principle_direction(patch, u_val, v_val, arc_length_scaled)
-    max_principal_vector = max_principle_direction(patch, u_val, v_val, arc_length_scaled)
-
-    return (min_principal_vector, max_principal_vector)
-
-
 def add_value_to_dict(dictionary, key, value_to_add):
     if key not in dictionary:
         dictionary[key] = 0
 
     dictionary[key] += value_to_add
 
-def parameter_to_zone_index(parameter_val, depth):
-    # 4 quadrants per depth
-    # 2 splits per axis
-    zone_scalar = 2 ** depth
 
-    return int(parameter_val * zone_scalar)
+def append_value_to_dict(dictionary, key, value_to_append):
+    if key not in dictionary:
+        dictionary[key] = []
 
-def zone_edge_hash(pos_1, pos_2, depth):
-    if pos_2 < pos_1:
-        pos_1, pos_2 = pos_2, pos_1
-
-    return (
-        parameter_to_zone_index(pos_1[0], depth),
-        parameter_to_zone_index(pos_2[0], depth),
-        parameter_to_zone_index(pos_1[1], depth),
-        parameter_to_zone_index(pos_2[1], depth)
-    )
+    dictionary[key].append(value_to_append)
 
 
-@dataclasses.dataclass
+def add_to_set_value_to_dict(dictionary, key, value_to_append):
+    if key not in dictionary:
+        dictionary[key] = set()
+
+    dictionary[key].add(value_to_append)
+
+
+# Dataclass will generate __hash__() when frozen and eq are true
+#   https://stackoverflow.com/a/52390731
+@dataclasses.dataclass(
+    frozen=True,
+    eq=True
+)
 class Zone:
     u_bounds: tuple[float, float]
     v_bounds: tuple[float, float]
     depth: int
     near_umbilic: bool
     has_ridge: bool
-    zero_both_ways: bool
+    not_exactly_one_both_ways: bool
     min_deviating: bool
     max_deviating: bool
     min_average_vector: mathutils.Vector
     max_average_vector: mathutils.Vector
+
+    def __hash__(self):
+        """https://docs.python.org/3/reference/datamodel.html#object.__hash__"""
+        return hash((
+            self.u_bounds,
+            self.v_bounds,
+            self.depth,
+            self.near_umbilic,
+            self.has_ridge,
+            self.not_exactly_one_both_ways,
+            self.min_deviating,
+            self.max_deviating,
+            self.min_average_vector.freeze(),
+            self.max_average_vector.freeze()
+        ))
 
     def get_width(self) -> float:
         return self.u_bounds[1] - self.u_bounds[0]
@@ -393,7 +226,90 @@ class Zone:
     def get_area(self) -> float:
         return self.get_width() * self.get_height()
 
-    def rasterize_to_image_buffer(self, image_buffer, image_size) -> None:
+    def get_center(self) -> tuple[float, float]:
+        return (
+            (self.u_bounds[1] + self.u_bounds[0]) / 2,
+            (self.v_bounds[1] + self.v_bounds[0]) / 2,
+        )
+
+    def distance(self, other_zone: Zone) -> float:
+        return math.dist(self.get_center(), other_zone.get_center())
+
+    def center_between_two_zones(self, other_zone: Zone) -> tuple:
+        center_1 = self.get_center()
+        center_2 = other_zone.get_center()
+
+        return (
+            (center_1[0] + center_2[0]) / 2,
+            (center_1[1] + center_2[1]) / 2
+        )
+
+    @staticmethod
+    def parameter_to_zone_index(parameter_val, depth):
+        # 4 quadrants per depth
+        # 2 splits per axis
+        zone_scalar = 2 ** depth
+
+        return int(parameter_val * zone_scalar)
+
+    @staticmethod
+    def point_hash(
+        point: tuple[float, float],
+        depth: int
+    ):
+        return hash((
+            Zone.parameter_to_zone_index(point[0], depth),
+            Zone.parameter_to_zone_index(point[1], depth)
+        ))
+
+    @staticmethod
+    def edge_hash(
+        pos_1: tuple[float, float],
+        pos_2: tuple[float, float],
+        depth: int
+    ):
+        if pos_2 < pos_1:
+            pos_1, pos_2 = pos_2, pos_1
+
+        return hash((
+            Zone.point_hash(pos_1, depth),
+            Zone.point_hash(pos_2, depth)
+        ))
+
+    def get_four_corners(self) -> tuple:
+        top_left = (self.u_bounds[0], self.v_bounds[0])
+        top_right = (self.u_bounds[1], self.v_bounds[0])
+        bottom_left = (self.u_bounds[0], self.v_bounds[1])
+        bottom_right = (self.u_bounds[1], self.v_bounds[1])
+
+        return (
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right
+        )
+
+    def get_edges_hashes(self) -> tuple:
+        top_left, top_right, bottom_left, bottom_right = self.get_four_corners()
+
+        return (
+            Zone.edge_hash(top_left, top_right, self.depth),
+            Zone.edge_hash(top_left, bottom_left, self.depth),
+            Zone.edge_hash(top_right, bottom_right, self.depth),
+            Zone.edge_hash(bottom_left, bottom_right, self.depth)
+        )
+
+    def get_corner_hashes(self) -> tuple:
+        top_left, top_right, bottom_left, bottom_right = self.get_four_corners()
+
+        return (
+            Zone.point_hash(top_left, self.depth),
+            Zone.point_hash(top_right, self.depth),
+            Zone.point_hash(bottom_left, self.depth),
+            Zone.point_hash(bottom_right, self.depth)
+        )
+
+    def rasterize_to_image_buffer(self, image_buffer, image_size, identifier=None) -> None:
         # Add to texture
         u_pixel_start = int(round(image_size[0] * self.u_bounds[0]))
         u_pixel_end = int(round(image_size[0] * self.u_bounds[1]))
@@ -403,9 +319,13 @@ class Zone:
 
         for v_pixel in range(v_pixel_start, v_pixel_end):
             for u_pixel in range(u_pixel_start, u_pixel_end):
-                r = (self.depth * 0.3) % 1.0
-                g = (self.depth * 0.5) % 1.0
-                b = (self.depth * 0.7) % 1.0
+                index = self.depth
+                if identifier is not None:
+                    index = identifier
+
+                color = non_dependent_utilities.unique_color_from_number(index)
+
+                image_buffer[u_pixel][v_pixel] = color
 
                 # vector = min_p_average_vector.normalized()
                 # vector = max_p_average_vector.normalized()
@@ -427,21 +347,27 @@ class Zone:
 
                 # r = g = b = 0.0
 
+                # if self.has_ridge:
+                #     g = 1.0
+                # if self.near_umbilic:
+                #     b = 1.0
+
                 # if near_umbilic:
                 #     r = 1.0
 
                 # if self.has_ridge:
                 #     g = 1.0
-                #
-                # if self.min_deviating:
-                #     b = 1.0
-                #     # g = 0.5
-                # if self.max_deviating:
-                #     r = 1.0
 
-                image_buffer[u_pixel][v_pixel] = (
-                    r, g, b, 1.0
-                )
+                # Max is not deviating
+                # if self.min_deviating:
+                #     r = 1.0
+                #
+                # if self.max_deviating:
+                #     b = 1.0
+
+                # image_buffer[u_pixel][v_pixel] = (
+                #     r, g, b, 1.0
+                # )
 
 
 def equal_curvature_zones_recursion(
@@ -458,7 +384,8 @@ def equal_curvature_zones_recursion(
         (start_depth, (0, 1), (0, 1))
     )
 
-    num_samples_per_axis = 2
+    # Need 3 because of no umbilics, many ridges saddle
+    num_samples_per_axis = 3
 
     output_zones = []
 
@@ -490,24 +417,24 @@ def equal_curvature_zones_recursion(
                 u_pre = u_index / (num_samples_per_axis - 1)
                 v_pre = v_index / (num_samples_per_axis - 1)
 
-                u = lerp(u_bounds[0], u_bounds[1], u_pre)
-                v = lerp(v_bounds[0], v_bounds[1], v_pre)
+                u = math_extensions.lerp(u_bounds[0], u_bounds[1], u_pre)
+                v = math_extensions.lerp(v_bounds[0], v_bounds[1], v_pre)
 
                 min_principal_vector, max_principal_vector = \
-                    min_max_principle_directions(
+                    math_extensions.min_max_principle_directions(
                         bezier_patch_control_points, u, v
                     )
 
                 if False:
-                    world_point = bezier_surface_at_parameters(
+                    world_point = math_extensions.bezier_surface_at_parameters(
                         bezier_patch_control_points, u, v
                     )
-                    world_min_principal_vector = bezier_surface_at_parameters(
+                    world_min_principal_vector = math_extensions.bezier_surface_at_parameters(
                         bezier_patch_control_points,
                         u + min_principal_vector.x,
                         v + min_principal_vector.y
                     )
-                    world_max_principal_vector = bezier_surface_at_parameters(
+                    world_max_principal_vector = math_extensions.bezier_surface_at_parameters(
                         bezier_patch_control_points,
                         u + max_principal_vector.x,
                         v + max_principal_vector.y
@@ -529,13 +456,10 @@ def equal_curvature_zones_recursion(
 
         has_ridge = False
         near_umbilic = False
-        zero_both_ways = False
+        not_exactly_one_both_ways = False
 
         min_deviating = False
         max_deviating = False
-
-        # print(min_p_average_vector.magnitude)
-        # print(max_p_average_vector.magnitude)
 
         # Ridge is opposite direction, therefore results in near 0 magnitude
         if min_p_average_vector.magnitude < ridge_magnitude_threshold:
@@ -557,15 +481,13 @@ def equal_curvature_zones_recursion(
                 near_umbilic = True
                 max_deviating = True
 
-        if min_p_average_vector.magnitude < near_zero_threshold \
-                and max_p_average_vector.magnitude < near_zero_threshold:
-            zero_both_ways = True
+        if min_p_average_vector.magnitude < ridge_magnitude_threshold \
+                and max_p_average_vector.magnitude < ridge_magnitude_threshold \
+                and min_p_average_vector.magnitude > near_zero_threshold \
+                and max_p_average_vector.magnitude > near_zero_threshold:
+            not_exactly_one_both_ways = True
 
-        # if ridge and not umbilic:
-        #     print("ridge:", ridge)
-        #     print("umbilic:", umbilic)
-
-        if has_ridge or near_umbilic or zero_both_ways:
+        if has_ridge or near_umbilic or not_exactly_one_both_ways:
             if current_depth < max_depth:
                 need_subdivide = True
             # else:
@@ -579,7 +501,7 @@ def equal_curvature_zones_recursion(
                     current_depth,
                     near_umbilic,
                     has_ridge,
-                    zero_both_ways,
+                    not_exactly_one_both_ways,
                     min_deviating,
                     max_deviating,
                     min_p_average_vector,
@@ -611,6 +533,7 @@ def equal_curvature_zones_recursion(
 
     return output_zones
 
+
 def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: bpy.types.Object):
     control_bmesh = bmesh.from_edit_mesh(control_mesh)
 
@@ -631,6 +554,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
     start_time = datetime.datetime.now()
 
+    # Image
     if True:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
@@ -645,12 +569,12 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         # print(uv_layers)
 
         # Create grid mesh
-        if True:
+        if False:
             uv_layer = output_bmesh.loops.layers.uv.verify()
 
             for patch_index, patch_control_points in enumerate(patches):
                 def generator_function(u, v):
-                    return bezier_surface_at_parameters(patch_control_points, u, v)
+                    return math_extensions.bezier_surface_at_parameters(patch_control_points, u, v)
 
                 # @TODO: Each grid mesh is not connected, new verticies are made for
                 #   each bordering patch
@@ -696,8 +620,12 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                     if image.size[0] != u_image_size and image.size[1] != v_image_size:
                         bpy.data.images.remove(image)
                     else:
-                        index = int(image_name.replace(patch_prefix, ""))
-                        images[index] = image
+                        try:
+                            index_str = image_name.replace(patch_prefix, "")
+                            index = int(index_str)
+                            images[index] = image
+                        except ValueError:
+                            pass
 
             for image_index, image in enumerate(images):
                 if image is None:
@@ -769,22 +697,29 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
             # Modify textures to display surface values
             for patch_index, image in enumerate(images):
+                patch = patches[patch_index]
+
                 num_data_points = len(image.pixels)
                 u_size, v_size = image.size
                 num_channels = image.channels
 
                 # Recursive method
                 if True:
-                    out = equal_curvature_zones_recursion(patches[patch_index], 10, 0.999, 0.6, 0.5)
+                    print("getting zones")
 
-                    print("num zones:", len(out))
+                    max_depth = 10
+                    zones = equal_curvature_zones_recursion(
+                        patch, max_depth, 0.999, 0.6, 0.01
+                    )
+
+                    print("num zones:", len(zones))
 
                     area_percentages = {}
 
-                    for zone in out:
+                    for zone in zones:
                         add_value_to_dict(area_percentages, zone.depth, zone.get_area())
 
-                        zone.rasterize_to_image_buffer(image_buffer, image.size)
+                        # zone.rasterize_to_image_buffer(image_buffer, image.size)
 
                     print(dict(sorted(area_percentages.items(), key=lambda item: item[1])))
                     print("area sum:", sum(area_percentages.values()))
@@ -792,6 +727,977 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                     if len(area_percentages) >= 2:
                         print(statistics.mean(area_percentages.values()))
                         print(statistics.stdev(area_percentages.values()))
+
+                    print("getting zone shared corners")
+
+                    # Maps corner hash to zones with corner
+                    final_depth_zone_shared_corner = {}
+                    umbilic_zones = set()
+
+                    for zone in zones:
+                        if zone.depth == max_depth:
+                            if zone.near_umbilic:
+                                umbilic_zones.add(zone)
+
+                            corner_hashes = zone.get_corner_hashes()
+                            for corner_hash in corner_hashes:
+                                append_value_to_dict(
+                                    final_depth_zone_shared_corner, corner_hash, zone)
+
+                    print("num umbilic zones:", len(umbilic_zones))
+
+                    print("verifying shared corner invariants")
+                    for zones_with_corner in final_depth_zone_shared_corner.values():
+                        assert len(zones_with_corner) <= 4
+
+                        # if len(zones_with_corner) == 2:
+                        #     dist = (
+                        #         mathutils.Vector(zones_with_corner[0].get_center())
+                        #         - mathutils.Vector(zones_with_corner[1].get_center())
+                        #     ).length
+                        #     # Check against distance between max depth zones
+                        #     #   (which is width of a max depth zone)
+                        #     assert abs(dist - 1 / (2 ** max_depth)) <= 1e-6
+
+                    print("create umbilic/ridge adjacency graph")
+
+                    # Maps zone to zones with shared corners
+                    final_depth_adjacency_graph = {}
+
+                    for corner_hash, zones in final_depth_zone_shared_corner.items():
+                        for pair in itertools.permutations(zones, r=2):
+                            add_to_set_value_to_dict(
+                                final_depth_adjacency_graph, pair[0], pair[1]
+                            )
+                            add_to_set_value_to_dict(
+                                final_depth_adjacency_graph, pair[1], pair[0]
+                            )
+
+                    print("verifying adjacency invariants")
+                    for start_zone, adjacency in final_depth_adjacency_graph.items():
+                        assert len(adjacency) <= 8 and len(adjacency) > 0
+
+                        # Assert adjacency does not map onto itself
+                        for zone in adjacency:
+                            # Check if not same location in memory
+                            assert zone is not start_zone
+
+                    print("get each umbilic area")
+
+                    unvisited_umbilic_zones = copy.copy(umbilic_zones)
+                    umbilic_areas = []
+
+                    while len(unvisited_umbilic_zones) != 0:
+                        start_umbilic_zone = unvisited_umbilic_zones.pop()
+
+                        umbilic_area = {
+                            "min_deviating": set(),
+                            "max_deviating": set(),
+                            "center": None
+                        }
+
+                        current_umbilic_area_queue = set()
+                        current_umbilic_area_queue.add(start_umbilic_zone)
+
+                        min_deviating = set()
+                        max_deviating = set()
+
+                        while len(current_umbilic_area_queue) != 0:
+                            current_umbilic_zone = current_umbilic_area_queue.pop()
+
+                            if current_umbilic_zone != start_umbilic_zone:
+                                unvisited_umbilic_zones.remove(current_umbilic_zone)
+
+                            for adjacent_zone in final_depth_adjacency_graph[current_umbilic_zone]:
+                                # Can have zones without ridge or umbilic
+                                if adjacent_zone.has_ridge:
+                                    if adjacent_zone.min_deviating:
+                                        umbilic_area["min_deviating"].add(adjacent_zone)
+                                    elif adjacent_zone.max_deviating:
+                                        umbilic_area["max_deviating"].add(adjacent_zone)
+
+                                elif adjacent_zone.near_umbilic:
+                                    if adjacent_zone in unvisited_umbilic_zones:
+                                        current_umbilic_area_queue.add(adjacent_zone)
+
+                        umbilic_areas.append(umbilic_area)
+
+                    print("num umbilic areas:", len(umbilic_areas))
+
+                    umbilic_centers = set()
+
+                    print("get center of umbilics")
+
+                    index = 5
+
+                    for umbilic_area in umbilic_areas:
+                        if len(umbilic_area["min_deviating"]) == 0 \
+                                or len(umbilic_area["max_deviating"]) == 0:
+                            continue
+
+                        for min_deviating in umbilic_area["min_deviating"]:
+                            min_deviating.rasterize_to_image_buffer(image_buffer, image.size, index)
+                        for max_deviating in umbilic_area["max_deviating"]:
+                            max_deviating.rasterize_to_image_buffer(
+                                image_buffer, image.size, index + 1)
+
+                        print("find closest pair of min and max deviating (brute force)")
+
+                        # Assumes only 1 min and 1 max ridge
+
+                        # https://docs.python.org/3/library/itertools.html#itertools.product
+                        max_dist = 0.0
+                        max_pair = None
+                        for pair in itertools.product(umbilic_area["min_deviating"], umbilic_area["max_deviating"]):
+                            min_zone, max_zone = pair
+                            current_dist = min_zone.distance(max_zone)
+
+                            if current_dist >= max_dist:
+                                max_dist = current_dist
+                                max_pair = pair
+
+                        center = max_pair[0].center_between_two_zones(max_pair[1])
+                        umbilic_area["center"] = center
+                        umbilic_centers.add(center)
+
+                        index += 2
+
+                    print("num umbilics centers:", len(umbilic_centers))
+
+                    # # https://stackoverflow.com/a/9997374
+                    # def ccw(A, B, C):
+                    #     return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
+                    #
+                    # # Return true if line segments AB and CD intersect
+                    # def intersect(A, B, C, D):
+                    #     return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
+
+                    class Polyline:
+                        def __init__(self,
+                                     position_array: list[mathutils.Vector],
+                                     length_array: list[float],
+                                     min_else_max: bool
+                                     ):
+                            self._position_array = position_array
+                            first_val = length_array[0]
+                            self._length_array = [e - first_val for e in length_array]
+                            self._min_else_max = min_else_max
+
+                        def is_min_else_max(self):
+                            return self._min_else_max
+
+                        def get_length(self):
+                            return self._length_array[-1]
+
+                        def coordinate_at_parameter(self, parameter):
+                            length_along = parameter * self.get_length()
+
+                            print(f"apply polyline split at {parameter}")
+
+                            index = 0
+                            for pair in itertools.pairwise(self._length_array):
+                                first, second = pair
+
+                                if length_along >= first and length_along <= second:
+                                    scale = second - first
+                                    interpolate = (length_along - first) / scale
+
+                                    pos_1 = self._position_array[index]
+                                    pos_2 = self._position_array[index + 1]
+
+                                    return pos_1.lerp(pos_2, interpolate)
+
+                                index += 1
+
+                            return None
+
+                        def get_intersection(
+                            self,
+                            segment_start_coord: mathutils.Vector,
+                            segment_end_coord: mathutils.Vector
+                        ):
+                            index = 0
+
+                            # https://docs.python.org/3/library/itertools.html#itertools.pairwise
+                            for pair in itertools.pairwise(self._position_array):
+                                first, second = pair
+
+                                length_along = self._length_array[index]
+                                length_along_next = self._length_array[index + 1]
+                                change_between = length_along_next - length_along
+
+                                intersection = mathutils.geometry.intersect_line_line_2d(
+                                    first,
+                                    second,
+                                    segment_start_coord,
+                                    segment_end_coord
+                                )
+
+                                if intersection is not None:
+                                    delta = mathutils.Vector(second) - mathutils.Vector(first)
+                                    intersection_delta = mathutils.Vector(
+                                        intersection) - mathutils.Vector(first)
+
+                                    interpolate = intersection_delta.length / delta.length
+
+                                    parameter = (length_along + (change_between *
+                                                 interpolate)) / self.get_length()
+
+                                    return intersection, parameter
+
+                                index += 1
+
+                            return None
+
+                        def split_at(self, parameter):
+                            length_along = parameter * self.get_length()
+
+                            original_length = self.get_length()
+
+                            print(f"apply polyline split at {parameter}")
+
+                            index = 0
+                            for pair in itertools.pairwise(self._length_array):
+                                first, second = pair
+
+                                if length_along == first:
+                                    new_polyline = Polyline(
+                                        self._position_array[index:],
+                                        self._length_array[index:],
+                                        self._min_else_max
+                                    )
+
+                                    # Modify array afterwards so new polyline can source from it
+                                    self._position_array = self._position_array[:index + 1]
+                                    self._length_array = self._length_array[:index + 1]
+
+                                    # @TODO: Length assertion
+                                    # assert self.get_length() - se
+
+                                    return self, new_polyline
+
+                                if length_along > first and length_along < second:
+                                    scale = second - first
+                                    interpolate = (length_along - first) / scale
+
+                                    pos_1 = self._position_array[index]
+                                    pos_2 = self._position_array[index + 1]
+
+                                    new_pos = pos_1.lerp(pos_2, interpolate)
+
+                                    # Does not include first position as index + 1
+                                    new_polyline = Polyline(
+                                        [new_pos] + self._position_array[index + 1:],
+                                        [length_along] + self._length_array[index + 1:],
+                                        self._min_else_max
+                                    )
+
+                                    # Includes first position as index (index + 1 exclusive)
+                                    self._position_array = \
+                                        self._position_array[:index + 1] + [new_pos]
+                                    self._length_array = \
+                                        self._length_array[:index + 1] + [length_along]
+
+                                    return self, new_polyline
+
+                                index += 1
+
+                            return None
+
+                        def rasterize(self, index=None):
+                            for position in self._position_array:
+                                if index is None:
+                                    color = (0.0, 0.0, 1.0, 1.0) if self._min_else_max else (
+                                        1.0, 0.0, 0.0, 1.0)
+                                else:
+                                    color = non_dependent_utilities.unique_color_from_number(index)
+
+                                utilities.rasterize_point(
+                                    image_buffer,
+                                    position,
+                                    image.size,
+                                    color
+                                )
+
+                            pass
+
+                    # Integration (
+                    #   vector_field_function (arc length scaled),
+                    #   origin_vertex,
+                    #   start_position,
+                    #   reverse_integration,
+                    #   polylines: position_collection[Polyline],
+                    #   mesh_verticies: position_collection[Mesh.Vertex]
+                    # )
+                    # Returns: (
+                    #   new_polyline
+                    #   ending_vertex (existing if hit_vertex else new)
+                    #   result_type,
+                    #   intersected_polyline_results = (
+                    #       intersected polyline (None if using existing vertex),
+                    #       polyline intersection parameter (0 to 1 inclusive),
+                    #   )
+                    # )
+
+                    class ResultType(enum.Enum):
+                        HIT_VERTEX = 1
+                        HIT_BOUNDS = 2
+                        HIT_POLYLINE = 3
+                        RAN_OUT_OF_STEPS = 4
+
+                    def integrate(
+                        bezier_patch_control_points,
+                        min_else_max: bool,
+                        origin_vertex: bmesh.types.BMVert,
+                        start_parameters: mathutils.Vector,
+                        reverse_integration: bool,
+                        polylines: set[Polyline],
+                        mesh_verticies: bmesh.types.BMVertSeq
+                    ):
+                        max_steps = 10000
+                        same_pos_tolerance = 1e-9
+                        same_vertex_distance = 1 / (2 ** 7)
+                        step_size = 0.001
+
+                        position_array = []
+                        length_array = []
+
+                        origin_parameters = origin_vertex.co.to_2d().freeze()
+                        vertex_dist = (origin_parameters - start_parameters).length
+
+                        if vertex_dist > same_pos_tolerance:
+                            position_array = [origin_parameters,
+                                              start_parameters.freeze()]
+                            length_array = [0.0, vertex_dist]
+
+                            current_length = vertex_dist
+                        else:
+                            position_array = [start_parameters.freeze()]
+                            length_array = [0.0]
+
+                            current_length = 0.0
+
+                        current_principle_vector = None
+                        current_parameters = mathutils.Vector(start_parameters)
+
+                        result_type = ResultType.RAN_OUT_OF_STEPS
+                        intersection_return = None
+                        ending_vertex = None
+
+                        for step in range(max_steps):
+                            val_in_bounds, new_principle_vector, new_parameters, reverse_due_to_ridge = \
+                                math_extensions.line_of_curvature_integration_fixed_step_01_bound(
+                                    bezier_patch_control_points,
+                                    current_parameters,
+                                    min_else_max,
+                                    step_size,
+                                    last_principle_vector=current_principle_vector,
+                                    reverse=reverse_integration
+                                )
+
+                            if reverse_due_to_ridge:
+                                reverse_integration = not reverse_integration
+
+                            position_array.append(new_parameters.freeze())
+
+                            current_length += step_size
+                            length_array.append(current_length)
+
+                            if not val_in_bounds:
+                                result_type = ResultType.HIT_BOUNDS
+                                break
+
+                            # distance_from_origin = (origin_parameters - new_parameters).length
+
+                            if current_length > step_size * 2:
+                                # Find nearby verticies
+                                for vert_to_compare in mesh_verticies:
+                                    # Ignore origin vertex
+                                    if vert_to_compare is origin_vertex:
+                                        continue
+
+                                    if (vert_to_compare.co.to_2d() - new_parameters).length <= same_vertex_distance:
+                                        result_type = ResultType.HIT_VERTEX
+                                        ending_vertex = vert_to_compare
+                                        break
+
+                                # Find intersecting polylines
+                                for polyline in polylines:
+                                    # if polyline.is_min_else_max() == min_else_max:
+                                    #     continue
+
+                                    intersection_results = polyline.get_intersection(
+                                        current_parameters,
+                                        new_parameters,
+                                    )
+
+                                    if intersection_results is not None:
+                                        point, parameter = intersection_results
+
+                                        if parameter == 0.0:
+                                            continue
+
+                                        result_type = ResultType.HIT_POLYLINE
+
+                                        position_array[-1] = point
+                                        length_array[-1] -= step_size * ((new_parameters - point).length /
+                                                                         (new_parameters - current_parameters).length)
+
+                                        print(f"polyline hit at {point}")
+
+                                        intersection_return = (
+                                            polyline,
+                                            parameter
+                                        )
+                                        break
+
+                            if result_type != ResultType.RAN_OUT_OF_STEPS:
+                                break
+
+                            current_parameters = new_parameters
+                            current_principle_vector = new_principle_vector
+
+                        if ending_vertex is None:
+                            ending_vertex = mesh_verticies.new(
+                                position_array[-1].to_3d()
+                            )
+
+                        new_polyline = Polyline(
+                            position_array,
+                            length_array,
+                            min_else_max
+                        )
+
+                        # Returns: (
+                        #   new_polyline
+                        #   ending_vertex (existing if hit_vertex else new)
+                        #   result_type,
+                        #   intersected_polyline_results (None if using existing vertex):
+                        #   (
+                        #       intersected polyline,
+                        #       polyline intersection parameter (0 to 1 inclusive),
+                        #   )
+                        # )
+                        return (
+                            new_polyline,
+                            ending_vertex,
+                            result_type,
+                            reverse_integration,
+                            intersection_return
+                        )
+
+                    # Cut Polyline and Edge and Add Vertex (
+                    #   polyline_to_edge_map: dict[Polyline, Mesh.Edge],
+                    #   mesh_edges_collection: collection[Mesh.Edge]
+                    #   polyline_to_split: Polyline,
+                    #   parameter: float,
+                    #   vertex_to_add: Mesh.Vertex
+                    # )
+                    #
+
+                    def cut_polyline_and_edge_and_add_vertex(
+                        polylines: set[Polyline],
+                        polyline_to_edge_map: dict[Polyline, bmesh.types.BMEdge],
+                        mesh_edges_collection: bmesh.types.BMEdgeSeq,
+                        polyline_to_split: Polyline,
+                        parameter: float,
+                        vertex_to_add: bmesh.types.BMVert
+                    ):
+                        print("apply cut")
+
+                        edge_to_split = polyline_to_edge_map[polyline_to_split]
+
+                        # Remove all traces of original polyline
+                        polyline_to_edge_map.pop(polyline_to_split)
+                        polylines.remove(polyline_to_split)
+
+                        polyline_lower, polyline_upper = polyline_to_split.split_at(parameter)
+
+                        # Make two new edges
+                        start_vert, end_vert = edge_to_split.verts
+
+                        # for edge in mesh_edges_collection:
+                        #     print(edge)
+
+                        mesh_edges_collection.remove(edge_to_split)
+
+                        print("start:", start_vert)
+                        print("vertex_to_add:", vertex_to_add)
+                        print("end:", end_vert)
+
+                        edge_lower = mesh_edges_collection.new((start_vert, vertex_to_add))
+                        edge_upper = mesh_edges_collection.new((vertex_to_add, end_vert))
+
+                        print("lower:", edge_lower)
+                        print("upper:", edge_upper)
+
+                        # Add two parts of original polyline
+                        polylines.add(polyline_lower)
+                        polylines.add(polyline_upper)
+
+                        # polyline_lower.rasterize(index=id(polyline_upper))
+                        # polyline_upper.rasterize(index=id(polyline_upper))
+
+                        polyline_to_edge_map[polyline_lower] = edge_lower
+                        polyline_to_edge_map[polyline_upper] = edge_upper
+
+                    # Create line of curvature edge (
+                    #   function_to_integrate
+                    #   starting_vertex
+                    #   starting_point,
+                    #   reverse_integration: bool,
+                    #   polyline_to_edge_map: dict[Polyline, Mesh.Edge]
+                    #   polylines: position_collection[Polyline],
+                    #   mesh_verticies: position_collection[Mesh.Vertex]
+                    #   mesh_edges: collection[Mesh.Edges]
+                    # )
+                    #
+                    # Returns: (
+                    #   lonely_vertex, None when hit_vertex or hit_bounds
+                    # )
+
+                    def create_line_of_curvature_edge(
+                        bezier_patch_control_points,
+                        min_else_max,
+                        starting_vertex: bmesh.types.BMVert,
+                        start_position: mathutils.Vector,
+                        reverse_integration: bool,
+                        polyline_to_edge_map: dict[Polyline, bmesh.types.BMEdge],
+                        polylines: set[Polyline],
+                        mesh_verticies: bmesh.types.BMVertSeq,
+                        mesh_edges: bmesh.types.BMEdgeSeq
+                    ):
+                        print(f"starting vertex {starting_vertex}")
+                        print(f"starting vertex at {starting_vertex.co}")
+                        print(f"starting at {start_position}")
+
+                        new_polyline, ending_vertex, result_type, final_reversed_state, intersected_polyline_results = integrate(
+                            bezier_patch_control_points,
+                            min_else_max,
+                            starting_vertex,
+                            start_position,
+                            reverse_integration,
+                            polylines,
+                            mesh_verticies
+                        )
+
+                        assert result_type != ResultType.RAN_OUT_OF_STEPS
+
+                        print(f"ending vertex {ending_vertex}")
+                        print(f"ending vertex at {ending_vertex.co}")
+
+                        assert starting_vertex is not ending_vertex
+
+                        print(result_type)
+
+                        polylines.add(new_polyline)
+
+                        new_edge = mesh_edges.new((starting_vertex, ending_vertex))
+                        polyline_to_edge_map[new_polyline] = new_edge
+
+                        if result_type == ResultType.HIT_POLYLINE:
+                            intersected_polyline, polyline_intersection_parameter = intersected_polyline_results
+
+                            assert new_polyline is not intersected_polyline
+                            # New vert, must only be connected to edge just made
+                            assert len(ending_vertex.link_edges) == 1
+
+                            print("polyline intersect vertex:", ending_vertex)
+
+                            cut_polyline_and_edge_and_add_vertex(
+                                polylines,
+                                polyline_to_edge_map,
+                                mesh_edges,
+                                intersected_polyline,
+                                polyline_intersection_parameter,
+                                ending_vertex,
+                            )
+
+                            print("polyline intersect vertex:", ending_vertex)
+
+                            return (ending_vertex, final_reversed_state)
+
+                        return None
+
+                    #   secondary_ridges = get_secondary_ridges_starting_points(
+                    #       min_principle_direction,
+                    #       max_principle_direction,
+                    #       umbilic_center,
+                    #       scanning_radius = 1 / (2 ** 9)
+                    #   )
+
+                    def get_secondary_ridges_starting_points(
+                        bezier_patch_control_points,
+                        center: mathutils.Vector,
+                        scanning_radius: float,
+                        subdivisions: int,
+                        starting_dot_tolerance: float
+                    ) -> list[tuple[mathutils.Vector, bool, bool]]:
+
+                        utilities.rasterize_point(
+                            image_buffer,
+                            center,
+                            image.size,
+                            (1.0, 1.0, 1.0, 1.0)
+                        )
+
+                        is_in_extreme = False
+                        last_is_in_extreme = False
+                        min_is_most_extreme = False
+                        reverse_integration = False
+
+                        extreme_dot = 0.0
+                        extreme_point = None
+
+                        output = []
+
+                        for subdivision in range(subdivisions):
+                            parameter = (subdivision / subdivisions)
+                            t = parameter * 2 * math.pi
+
+                            change = mathutils.Vector((
+                                math.cos(t),
+                                math.sin(t)
+                            ))
+
+                            final_point = center + (change * scanning_radius)
+
+                            min_principal_vector, max_principal_vector = \
+                                math_extensions.min_max_principle_directions(
+                                    bezier_patch_control_points,
+                                    final_point.x,
+                                    final_point.y
+                                )
+
+                            min_dot = min_principal_vector.normalized().dot(change.normalized())
+                            max_dot = max_principal_vector.normalized().dot(change.normalized())
+
+                            if abs(min_dot) > starting_dot_tolerance:
+                                is_in_extreme = True
+
+                                reverse_integration = min_dot < 0
+
+                                if abs(min_dot) > extreme_dot:
+                                    extreme_point = final_point.freeze()
+                                    extreme_dot = abs(min_dot)
+
+                                min_is_most_extreme = True
+                            elif abs(max_dot) > starting_dot_tolerance:
+                                is_in_extreme = True
+
+                                reverse_integration = max_dot < 0
+
+                                if abs(max_dot) > extreme_dot:
+                                    extreme_point = final_point.freeze()
+                                    extreme_dot = abs(max_dot)
+
+                                min_is_most_extreme = False
+                            else:
+                                is_in_extreme = False
+
+                            if last_is_in_extreme and not is_in_extreme:
+                                if extreme_point is not None:
+                                    print(min_is_most_extreme, reverse_integration, min_dot, max_dot)
+
+                                    output.append((
+                                        extreme_point, min_is_most_extreme, reverse_integration
+                                    ))
+
+                                    # order.append("B" if min_is_most_extreme else "R")
+                                    #
+                                    color = (0.0, 0.0, 1.0, 1.0) if min_is_most_extreme else (
+                                        1.0, 0.0, 0.0, 1.0)
+
+                                    utilities.rasterize_point(
+                                        image_buffer,
+                                        extreme_point,
+                                        image.size,
+                                        color
+                                    )
+
+                                    #
+                                    # math_extensions.integrate_lines_of_curvature_image(
+                                    #     image_buffer,
+                                    #     image.size,
+                                    #     color,
+                                    #     patch,
+                                    #     extreme_point,
+                                    #     arc_length_distance,
+                                    #     step_size,
+                                    #     use_min_principle_direction=min_is_most_extreme,
+                                    #     reverse=reverse
+                                    # )
+
+                                    print(extreme_dot)
+
+                                    extreme_dot = 0.0
+                                    extreme_point = None
+
+                            last_is_in_extreme = is_in_extreme
+
+                        return output
+
+                    print("begin meshing")
+
+                    # Following will be queried for nearby components:
+                    # output_mesh = Mesh()
+                    #   where
+                    #       output_mesh.verts is a collection of Vertex,
+                    #           where Vertex contains at minimum two dimensions for coordinate
+                    #       output_mesh.edges is a collection of Edge,
+                    #           where Edge contains two Vertex defining the edge
+
+                    polylines: set[Polyline] = set()
+
+                    polyline_to_edge_map: dict[Polyline, bmesh.types.BMEdge] = {}
+                    lonely_verticies: list[tuple[bmesh.types.BMVert, bool, bool]] = []
+
+                    print("setup generator points")
+
+                    for umbilic_center in umbilic_centers:
+                        umbilic_center = mathutils.Vector(umbilic_center)
+
+                        umbilic_center_vertex = output_bmesh.verts.new(
+                            umbilic_center.to_3d()
+                        )
+
+                        print("umbilic vertex:", umbilic_center_vertex)
+
+                        # : list[tuple[starting_point, min_else_max, reverse]]
+                        secondary_ridges = get_secondary_ridges_starting_points(
+                            patch,
+                            umbilic_center,
+                            scanning_radius=1 / (2 ** 9),
+                            subdivisions=1000,
+                            starting_dot_tolerance=0.999,
+                        )
+
+                        for secondary_ridge in secondary_ridges:
+                            integration_starting_point, min_else_max, reverse_integration = secondary_ridge
+
+                            lonely_verticies.append((
+                                False, umbilic_center_vertex, integration_starting_point, min_else_max, reverse_integration
+                            ))
+
+                    while True:
+                        while len(lonely_verticies) != 0:
+                            print(len(lonely_verticies))
+                            lonely_tuple = lonely_verticies.pop(0)
+                            is_lonely, lonely_vertex, integration_starting_point, min_else_max, reverse_integration = lonely_tuple
+
+                            print(lonely_tuple)
+
+                            lonely_vertex_result = create_line_of_curvature_edge(
+                                patch,
+                                min_else_max,
+                                lonely_vertex,
+                                integration_starting_point,
+                                reverse_integration,
+                                polyline_to_edge_map,
+                                polylines,
+                                output_bmesh.verts,
+                                output_bmesh.edges
+                            )
+
+                            if lonely_vertex_result is not None:
+                                new_lonely_vertex, final_reversed_state = lonely_vertex_result
+
+                                print(f"new lonely vertex: {new_lonely_vertex}")
+                                print(f"new lonely vertex at {new_lonely_vertex.co}")
+
+                                # Continue in same direction as previous lonely direction
+                                start_coordinate = new_lonely_vertex.co.to_2d().freeze()
+                                lonely_verticies.append((
+                                    True, new_lonely_vertex, start_coordinate, min_else_max, final_reversed_state
+                                ))
+
+                        # No lonely verticies here
+
+                        print("Finding edges to subdivide")
+
+                        for polyline in polylines:
+                            print(polyline.get_length())
+
+                        # Find first polyline that needs to be subdivided
+                        polyline_to_split = None
+                        for polyline in polylines:
+                            if polyline.get_length() >= 1 / (2 ** 2):
+                                polyline_to_split = polyline
+                                break
+
+                        # No more work to be done
+                        if polyline_to_split is None:
+                            break
+
+                        halfway_coord = polyline_to_split.coordinate_at_parameter(0.5).freeze()
+
+                        assert halfway_coord is not None
+
+                        halfway_vertex = output_bmesh.verts.new(
+                            halfway_coord.to_3d()
+                        )
+
+                        cut_polyline_and_edge_and_add_vertex(
+                            polylines,
+                            polyline_to_edge_map,
+                            output_bmesh.edges,
+                            polyline_to_split,
+                            0.5,
+                            halfway_vertex
+                        )
+
+                        # Flip integration function for orthogonality to edge
+                        min_else_max = not polyline_to_split.is_min_else_max()
+                        lonely_verticies.append((
+                            True, halfway_vertex, halfway_coord, min_else_max, False
+                        ))
+                        lonely_verticies.append((
+                            True, halfway_vertex, halfway_coord, min_else_max, True
+                        ))
+
+                    print("finished meshing")
+
+                    print("rasterizing polylines")
+
+                    for polyline in polylines:
+                        polyline.rasterize()
+
+                    if False:
+                        print("get areas of same type and their adjacency")
+
+                        if len(special_final_depth_zones) > 0:
+                            seperate_from_current_area = {
+                                zone: None
+                                for zone in special_final_depth_zones
+                            }
+
+                            visited_zones = set()
+
+                            # Maps area id to adjacent areas
+                            area_adjacency = {}
+                            # Maps area id to area zones
+                            area_id_map = {}
+                            ridge_areas = set()
+                            current_area_id = 0
+
+                            while len(seperate_from_current_area) != 0:
+                                start_zone, connection_tuple = seperate_from_current_area.popitem()
+
+                                # Seperate and connected has already been processed.
+                                #   Probably connected to area previously processed.
+                                if start_zone in visited_zones:
+                                    continue
+
+                                if connection_tuple is not None:
+                                    connection_zone, connection_area_id = connection_tuple
+
+                                    # Connect both ways to make graph directed
+                                    #   both ways
+                                    add_to_set_value_to_dict(
+                                        area_adjacency, connection_area_id, current_area_id
+                                    )
+                                    add_to_set_value_to_dict(
+                                        area_adjacency, current_area_id, connection_area_id
+                                    )
+
+                                area_queue = set()
+                                area_queue.add(start_zone)
+
+                                area = set()
+                                previous_good_zone = None
+
+                                while len(area_queue) != 0:
+                                    current_zone = area_queue.pop()
+
+                                    if current_zone in visited_zones:
+                                        continue
+
+                                    # zone_is_seperate = True
+                                    # if current_zone.near_umbilic and start_zone.near_umbilic:
+                                    #     zone_is_seperate = False
+                                    #
+                                    # elif current_zone.has_ridge and start_zone.has_ridge:
+                                    #     # Min deviating or max deviating ridges are seperate zones
+                                    #     if current_zone.min_deviating == start_zone.min_deviating \
+                                    #             and current_zone.max_deviating == start_zone.max_deviating:
+                                    #         zone_is_seperate = False
+
+                                    zone_is_same = False
+                                    if current_zone.near_umbilic == start_zone.near_umbilic \
+                                            and current_zone.has_ridge == start_zone.has_ridge:
+                                        zone_is_same = True
+
+                                    if not zone_is_same:
+                                        # Dont mark as visited yet as will be
+                                        #   processed again later
+                                        seperate_from_current_area[current_zone] = (
+                                            previous_good_zone, current_area_id
+                                        )
+                                        continue
+
+                                    visited_zones.add(current_zone)
+                                    area.add(current_zone)
+                                    previous_good_zone = current_zone
+
+                                    for adjacent in final_depth_adjacency_graph[current_zone]:
+                                        area_queue.add(adjacent)
+
+                                area_id_map[current_area_id] = (
+                                    start_zone, area
+                                )
+                                if start_zone.has_ridge:
+                                    ridge_areas.add(current_area_id)
+
+                                current_area_id += 1
+
+                            # print(area_id_map.keys())
+                            # print(area_adjacency)
+
+                            print(len(ridge_areas))
+
+                            # Find transitions of:
+                            #   min ridge to umbilic to max ridge
+                            # and
+                            #   max ridge to umbilic to min ridge
+
+                            for area_id, area in area_id_map.items():
+                                start_zone, zones = area
+                                if start_zone.has_ridge:
+                                    print(area_id, len(zones))
+                                    for zone in zones:
+                                        zone.rasterize_to_image_buffer(
+                                            image_buffer, image.size, area_id
+                                        )
+                        else:
+                            # @TODO: If no special zones, what to do?
+                            assert False
+
+                    if False:
+                        print("starting integration")
+
+                        arc_length_distance = 0.04
+                        step_size = 0.001
+
+                        for zone in zones:
+                            if zone.has_ridge:
+
+                                math_extensions.integrate_line_of_curvature_to_mesh_edges(
+                                    output_bmesh,
+                                    patches[patch_index],
+                                    zone.get_center(),
+                                    arc_length_distance,
+                                    step_size,
+                                    use_min_principle_direction=zone.min_deviating
+                                )
+                                math_extensions.integrate_line_of_curvature_to_mesh_edges(
+                                    output_bmesh,
+                                    patches[patch_index],
+                                    zone.get_center(),
+                                    arc_length_distance,
+                                    step_size,
+                                    use_min_principle_direction=zone.min_deviating,
+                                    reverse=True
+                                )
 
                 if False:
                     for v_pixel in range(v_size):
@@ -935,7 +1841,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             u_pos = u_sample_point / (u_num_sample_points - 1)
                             v_pos = v_sample_point / (v_num_sample_points - 1)
 
-                            found, value, parameters = umbilic_gradient_descent(
+                            found, value, parameters = math_extensions.umbilic_gradient_descent(
                                 mathutils.Vector((u_pos, v_pos)),
                                 patches[patch_index]
                             )
@@ -974,7 +1880,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                             #
                             # if umbilic_val <= 100:
 
-                            found, value, parameters = umbilic_gradient_descent(
+                            found, value, parameters = math_extensions.umbilic_gradient_descent(
                                 mathutils.Vector((u_val, v_val)),
                                 patches[patch_index],
                                 iterations=1000,
@@ -1043,6 +1949,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
 
+    # Principle direction field
     if False:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
@@ -1060,10 +1967,10 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                     u_val = u_sample / (u_samples - 1)
                     v_val = v_sample / (v_samples - 1)
 
-                    world_point = bezier_surface_at_parameters(patch, u_val, v_val)
+                    world_point = math_extensions.bezier_surface_at_parameters(patch, u_val, v_val)
 
                     min_principal_vector, max_principal_vector = \
-                        min_max_principle_directions(
+                        math_extensions.min_max_principle_directions(
                             patch, u_val, v_val
                         )
 
@@ -1088,11 +1995,11 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                     min_vector_end_parameters = parameters_vector + min_principal_vector
                     max_vector_end_parameters = parameters_vector + max_principal_vector
 
-                    min_vector_end = bezier_surface_at_parameters(
+                    min_vector_end = math_extensions.bezier_surface_at_parameters(
                         patch, min_vector_end_parameters.x, min_vector_end_parameters.y
                     )
 
-                    max_vector_end = bezier_surface_at_parameters(
+                    max_vector_end = math_extensions.bezier_surface_at_parameters(
                         patch, max_vector_end_parameters.x, max_vector_end_parameters.y
                     )
 
@@ -1120,6 +2027,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
 
+    # Integrate lines of curvature
     if False:
         # Start new mesh from scratch
         output_bmesh = bmesh.new()
@@ -1131,70 +2039,29 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
             arc_length_distance = 1
             step_size = 0.001
+            start_parameters = (u_val, v_val)
 
-            for v_sample in range(v_samples):
-                for u_sample in range(u_samples):
-                    u_val = u_sample / (u_samples - 1)
-                    v_val = v_sample / (v_samples - 1)
+            min_verts = math_extensions.integrate_line_of_curvature_to_mesh_edges(
+                output_bmesh,
+                patch,
+                start_parameters,
+                arc_length_distance,
+                step_size,
+                use_min_principle_direction=True
+            )
+            max_verts = math_extensions.integrate_line_of_curvature_to_mesh_edges(
+                output_bmesh,
+                patch,
+                start_parameters,
+                arc_length_distance,
+                step_size,
+                use_min_principle_direction=False,
+            )
 
-                    min_last_parameters = mathutils.Vector((u_val, v_val))
-                    max_last_parameters = mathutils.Vector((u_val, v_val))
-
-                    min_last_vert = output_bmesh.verts.new(bezier_surface_at_parameters(
-                        patch, min_last_parameters.x, min_last_parameters.y
-                    ))
-                    max_last_vert = output_bmesh.verts.new(bezier_surface_at_parameters(
-                        patch, max_last_parameters.x, max_last_parameters.y
-                    ))
-
-                    for step in range(int(math.ceil(arc_length_distance / step_size))):
-                        # print(step)
-                        min_principal_vector = min_principle_direction(
-                            patch, min_last_parameters.x, min_last_parameters.y, arc_length_scaled=True
-                        )
-                        max_principal_vector = max_principle_direction(
-                            patch, max_last_parameters.x, max_last_parameters.y, arc_length_scaled=True
-                        )
-
-                        min_current_parameters = min_last_parameters + \
-                            (min_principal_vector * step_size)
-                        max_current_parameters = max_last_parameters + \
-                            (max_principal_vector * step_size)
-
-                        vals_to_check = [
-                            min_current_parameters.x,
-                            min_current_parameters.y,
-                            max_current_parameters.x,
-                            max_current_parameters.y
-                        ]
-                        val_bad = False
-                        for val in vals_to_check:
-                            # print(val)
-                            if val < 0 or val > 1:
-                                val_bad = True
-                                break
-
-                        if val_bad:
-                            break
-
-                        min_current_vert = output_bmesh.verts.new(bezier_surface_at_parameters(
-                            patch, min_current_parameters.x, min_current_parameters.y
-                        ))
-                        max_current_vert = output_bmesh.verts.new(bezier_surface_at_parameters(
-                            patch, max_current_parameters.x, max_current_parameters.y
-                        ))
-
-                        output_bmesh.edges.new((min_current_vert, min_last_vert))
-                        output_bmesh.edges.new((max_current_vert, max_last_vert))
-
-                        min_current_vert[color_layer] = (0.188, 0.439, 0.945, 1.0)
-                        max_current_vert[color_layer] = (0.878, 0.298, 0.298, 1.0)
-
-                        min_last_vert = min_current_vert
-                        max_last_vert = max_current_vert
-
-                        min_last_parameters = min_current_parameters
-                        max_last_parameters = max_current_parameters
+            for min_vert in min_verts:
+                min_vert[color_layer] = (0.188, 0.439, 0.945, 1.0)
+            for max_vert in max_verts:
+                max_vert[color_layer] = (0.878, 0.298, 0.298, 1.0)
 
         output_mesh = output_object.data
         output_bmesh.to_mesh(output_mesh)
