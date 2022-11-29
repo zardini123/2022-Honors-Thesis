@@ -13,7 +13,7 @@ def rasterize_point(image_buffer, point: mathutils.Vector, image_size, color):
     if y >= image_size[1] or y < 0:
         return
 
-    image_buffer[x][y] = color
+    image_buffer[y][x] = color
 
 
 def get_arbitrary_element_of_set(the_set):

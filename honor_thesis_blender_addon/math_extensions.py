@@ -1,5 +1,6 @@
 import math
 import typing
+import itertools
 
 # Blender
 import mathutils
@@ -236,13 +237,32 @@ def line_of_curvature_integration_fixed_step_01_bound(
 
     next_parameters = current_parameters + (principle_vector * step_size)
 
-    val_in_bounds = is_all_vals_in_bounds(
-        [
-            next_parameters.x,
-            next_parameters.y,
-        ],
-        0, 1
-    )
+    bottom_left = mathutils.Vector((0, 0))
+    bottom_right = mathutils.Vector((1, 0))
+
+    top_left = mathutils.Vector((0, 1))
+    top_right = mathutils.Vector((1, 1))
+
+    val_in_bounds = True
+    for pair in itertools.product([bottom_left, top_right], [top_left, bottom_right], repeat=2):
+        intersection = mathutils.geometry.intersect_line_line_2d(
+            pair[0],
+            pair[1],
+            current_parameters,
+            next_parameters
+        )
+
+        if intersection is not None:
+            val_in_bounds = False
+            next_parameters = intersection
+
+    # val_in_bounds = is_all_vals_in_bounds(
+    #     [
+    #         next_parameters.x,
+    #         next_parameters.y,
+    #     ],
+    #     0, 1
+    # )
 
     return (val_in_bounds, principle_vector, next_parameters, reverse_due_to_ridge)
 
