@@ -369,7 +369,8 @@ def equal_curvature_zones_recursion(
     max_depth: int,
     same_direction_magnitude_threshold: float,
     ridge_magnitude_threshold: float,
-    near_zero_threshold: float
+    near_zero_threshold: float,
+    num_samples_per_axis: int,
 ):
     start_depth = 0
 
@@ -377,9 +378,6 @@ def equal_curvature_zones_recursion(
     stack.append(
         (start_depth, (0, 1), (0, 1))
     )
-
-    # Need 3 because of no umbilics, many ridges saddle
-    num_samples_per_axis = 3
 
     output_zones = []
 
@@ -414,62 +412,76 @@ def equal_curvature_zones_recursion(
 
         lowest_ratio = float('inf')
 
-        for v_index in range(num_samples_per_axis):
-            for u_index in range(num_samples_per_axis):
-                u_pre = u_index / (num_samples_per_axis - 1)
-                v_pre = v_index / (num_samples_per_axis - 1)
+        if num_samples_per_axis == 1:
+            u = math_extensions.lerp(u_bounds[0], u_bounds[1], 0.5)
+            v = math_extensions.lerp(v_bounds[0], v_bounds[1], 0.5)
 
-                u = math_extensions.lerp(u_bounds[0], u_bounds[1], u_pre)
-                v = math_extensions.lerp(v_bounds[0], v_bounds[1], v_pre)
+            min_principal_vector, max_principal_vector = \
+                math_extensions.min_max_principle_directions(
+                    bezier_patch_control_points, u, v
+                )
 
-                min_principal_vector, max_principal_vector = \
-                    math_extensions.min_max_principle_directions(
-                        bezier_patch_control_points, u, v
-                    )
+            min_p_summed_vectors += min_principal_vector.normalized()
+            max_p_summed_vectors += max_principal_vector.normalized()
 
-                # if min_mag > min_principal_vector.length and max_mag > max_principal_vector.length:
-                #     min_mag = min_principal_vector.length
-                #     max_mag = max_principal_vector.length
+            count += 1
+        else:
+            for v_index in range(num_samples_per_axis):
+                for u_index in range(num_samples_per_axis):
+                    u_pre = u_index / (num_samples_per_axis - 1)
+                    v_pre = v_index / (num_samples_per_axis - 1)
 
-                min_mag += min_principal_vector.length
-                max_mag += max_principal_vector.length
+                    u = math_extensions.lerp(u_bounds[0], u_bounds[1], u_pre)
+                    v = math_extensions.lerp(v_bounds[0], v_bounds[1], v_pre)
 
-                # numerator = min_principal_vector.length
-                # denominator = max_principal_vector.length
-                #
-                # if denominator > numerator:
-                #     numerator, denominator = denominator, numerator
-                #
-                # ratio = numerator / denominator
-                #
-                # if numerator < 1e-10 or denominator < 1e-10:
-                #     ratio = 0.0
-                #
-                # if ratio < lowest_ratio:
-                #     lowest_ratio = ratio
+                    min_principal_vector, max_principal_vector = \
+                        math_extensions.min_max_principle_directions(
+                            bezier_patch_control_points, u, v
+                        )
 
-                if False:
-                    world_point = math_extensions.bezier_surface_at_parameters(
-                        bezier_patch_control_points, u, v
-                    )
-                    world_min_principal_vector = math_extensions.bezier_surface_at_parameters(
-                        bezier_patch_control_points,
-                        u + min_principal_vector.x,
-                        v + min_principal_vector.y
-                    )
-                    world_max_principal_vector = math_extensions.bezier_surface_at_parameters(
-                        bezier_patch_control_points,
-                        u + max_principal_vector.x,
-                        v + max_principal_vector.y
-                    )
+                    # if min_mag > min_principal_vector.length and max_mag > max_principal_vector.length:
+                    #     min_mag = min_principal_vector.length
+                    #     max_mag = max_principal_vector.length
 
-                    min_principal_vector = world_min_principal_vector - world_point
-                    max_principal_vector = world_max_principal_vector - world_point
+                    min_mag += min_principal_vector.length
+                    max_mag += max_principal_vector.length
 
-                min_p_summed_vectors += min_principal_vector.normalized()
-                max_p_summed_vectors += max_principal_vector.normalized()
+                    # numerator = min_principal_vector.length
+                    # denominator = max_principal_vector.length
+                    #
+                    # if denominator > numerator:
+                    #     numerator, denominator = denominator, numerator
+                    #
+                    # ratio = numerator / denominator
+                    #
+                    # if numerator < 1e-10 or denominator < 1e-10:
+                    #     ratio = 0.0
+                    #
+                    # if ratio < lowest_ratio:
+                    #     lowest_ratio = ratio
 
-                count += 1
+                    if False:
+                        world_point = math_extensions.bezier_surface_at_parameters(
+                            bezier_patch_control_points, u, v
+                        )
+                        world_min_principal_vector = math_extensions.bezier_surface_at_parameters(
+                            bezier_patch_control_points,
+                            u + min_principal_vector.x,
+                            v + min_principal_vector.y
+                        )
+                        world_max_principal_vector = math_extensions.bezier_surface_at_parameters(
+                            bezier_patch_control_points,
+                            u + max_principal_vector.x,
+                            v + max_principal_vector.y
+                        )
+
+                        min_principal_vector = world_min_principal_vector - world_point
+                        max_principal_vector = world_max_principal_vector - world_point
+
+                    min_p_summed_vectors += min_principal_vector.normalized()
+                    max_p_summed_vectors += max_principal_vector.normalized()
+
+                    count += 1
 
         all_magnitudes = (min_mag + max_mag) / count
 
@@ -611,7 +623,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
     start_time = datetime.datetime.now()
 
-    if False:
+    if True:
         # Image
         if True:
             # Start new mesh from scratch
@@ -627,7 +639,7 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
             # print(uv_layers)
 
             # Create grid mesh
-            if False:
+            if True:
                 uv_layer = output_bmesh.loops.layers.uv.verify()
 
                 for patch_index, patch_control_points in enumerate(patches):
@@ -772,18 +784,37 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
                     # Recursive method
                     if True:
-                        draw_zones_for_all = False
-                        only_draw_base_zones = False
-                        show_ridges = False
-                        show_curvature_lines = True
+                        draw_zones_for_all = True
+                        only_draw_base_zones = True
+
+                        show_curvature_lines = False
                         only_show_base_curvature = False
                         draw_ajacent_ridges = False
 
                         print("getting zones")
 
-                        max_depth = 10
+                        # max_depth = 10
+                        # same_direction_magnitude_threshold = 0.999
+                        # ridge_magnitude_threshold = 0.6
+                        # near_zero_threshold = 0.01
+                        # # Need 3 because of no umbilics, many ridges saddle
+                        # num_samples_per_axis = 3
+
+                        show_ridges = True
+
+                        max_depth = 7
+                        same_direction_magnitude_threshold = 0.999
+                        ridge_magnitude_threshold = 0.6
+                        near_zero_threshold = 0.01
+                        num_samples_per_axis = 10
+
                         zones = equal_curvature_zones_recursion(
-                            patch, max_depth, 0.999, 0.6, 0.01
+                            patch,
+                            max_depth,
+                            same_direction_magnitude_threshold,
+                            ridge_magnitude_threshold,
+                            near_zero_threshold,
+                            num_samples_per_axis,
                         )
 
                         print("num zones:", len(zones))
@@ -793,13 +824,13 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                         for zone in zones:
                             add_value_to_dict(area_percentages, zone.depth, zone.get_area())
 
-                            val = max(0, min(1, zone.all_magnitudes))
+                            # val = max(0, min(1, zone.all_magnitudes))
 
                             if draw_zones_for_all:
                                 zone.rasterize_to_image_buffer(
                                     image_buffer, image.size,
                                     do_umbilic_ridges=show_ridges,
-                                    color_override=(val, val, val, 1.0)
+                                    # color_override=(val, val, val, 1.0)
                                 )
 
                         if not only_draw_base_zones:
@@ -1440,8 +1471,8 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                                 edge_lower = mesh_edges_collection.get((start_vert, vertex_to_add))
                                 edge_upper = mesh_edges_collection.get((vertex_to_add, end_vert))
 
-                                # if edge_lower is not None or edge_upper is not None:
-                                #     return
+                                if edge_lower is not None or edge_upper is not None:
+                                    return
 
                                 # Remove all traces of original polyline
                                 polyline_to_edge_map.pop(polyline_to_split)
@@ -1524,14 +1555,11 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
 
                                 print(result_type)
 
-                                # old_edge = mesh_edges.get((starting_vertex, ending_vertex))
-                                # if old_edge is not None:
-                                #     return None
+                                old_edge = mesh_edges.get((starting_vertex, ending_vertex))
+                                if old_edge is not None:
+                                    return None
 
                                 polylines.add(new_polyline)
-
-                                # new_edge = mesh_edges.get((starting_vertex, ending_vertex))
-                                # if new_edge is not None:
 
                                 new_edge = mesh_edges.new((starting_vertex, ending_vertex))
                                 polyline_to_edge_map[new_polyline] = new_edge
@@ -1805,78 +1833,80 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
                                     True, halfway_vertex, halfway_coord, min_else_max, True
                                 ))
 
-                            print("creating boundary edges")
+                            enable_boundary = True
+                            if enable_boundary:
+                                print("creating boundary edges")
 
-                            bottom_left = mathutils.Vector((0, 0))
-                            bottom_right = mathutils.Vector((1, 0))
+                                bottom_left = mathutils.Vector((0, 0))
+                                bottom_right = mathutils.Vector((1, 0))
 
-                            top_left = mathutils.Vector((0, 1))
-                            top_right = mathutils.Vector((1, 1))
+                                top_left = mathutils.Vector((0, 1))
+                                top_right = mathutils.Vector((1, 1))
 
-                            corners_to_consider = [
-                                bottom_left.freeze(),
-                                bottom_right.freeze(),
-                                top_left.freeze(),
-                                top_right.freeze()
-                            ]
+                                corners_to_consider = [
+                                    bottom_left.freeze(),
+                                    bottom_right.freeze(),
+                                    top_left.freeze(),
+                                    top_right.freeze()
+                                ]
 
-                            def in_tolerance(val_1, val_2, epsilon):
-                                return abs(val_1 - val_2) <= epsilon
+                                def in_tolerance(val_1, val_2, epsilon):
+                                    return abs(val_1 - val_2) <= epsilon
 
-                            def to_index(val_1, val_2):
-                                return (int(val_1), int(val_2))
+                                def to_index(val_1, val_2):
+                                    return (int(val_1), int(val_2))
 
-                            corners = {}
+                                corners = {}
 
-                            for vert in output_bmesh.verts:
-                                for corner in corners_to_consider:
-                                    if in_tolerance(vert.co.x, corner.x, 1/(2**9)) and in_tolerance(vert.co.y, corner.y, 1/(2**9)):
-                                        append_value_to_dict(
-                                            corners, to_index(corner.x, corner.y), vert
+                                for vert in output_bmesh.verts:
+                                    for corner in corners_to_consider:
+                                        if in_tolerance(vert.co.x, corner.x, 1/(2**9)) and in_tolerance(vert.co.y, corner.y, 1/(2**9)):
+                                            append_value_to_dict(
+                                                corners, to_index(corner.x, corner.y), vert
+                                            )
+                                            break
+
+                                print("corners", corners)
+
+                                for pair in itertools.product([0, 1], repeat=2):
+                                    index = to_index(pair[0], pair[1])
+                                    if index not in corners:
+                                        corners[index] = output_bmesh.verts.new(
+                                            mathutils.Vector((pair[0], pair[1], 0.0))
                                         )
-                                        break
 
-                            print("corners", corners)
+                                edges = {}
 
-                            for pair in itertools.product([0, 1], repeat=2):
-                                index = to_index(pair[0], pair[1])
-                                if index not in corners:
-                                    corners[index] = output_bmesh.verts.new(
-                                        mathutils.Vector((pair[0], pair[1], 0.0))
-                                    )
+                                for vert in output_bmesh.verts:
+                                    left = in_tolerance(vert.co.x, 0, 1/(2**9))
+                                    right = in_tolerance(vert.co.x, 1, 1/(2**9))
+                                    up = in_tolerance(vert.co.y, 1, 1/(2**9))
+                                    down = in_tolerance(vert.co.y, 0, 1/(2**9))
 
-                            edges = {}
+                                    if left:
+                                        sort_val = vert.co.y
+                                        append_value_to_dict(edges, 0, (sort_val, vert))
+                                    if right:
+                                        sort_val = vert.co.y
+                                        append_value_to_dict(edges, 1, (sort_val, vert))
+                                    if up:
+                                        sort_val = vert.co.x
+                                        append_value_to_dict(edges, 2, (sort_val, vert))
+                                    if down:
+                                        sort_val = vert.co.x
+                                        append_value_to_dict(edges, 3, (sort_val, vert))
 
-                            for vert in output_bmesh.verts:
-                                left = in_tolerance(vert.co.x, 0, 1/(2**9))
-                                right = in_tolerance(vert.co.x, 1, 1/(2**9))
-                                up = in_tolerance(vert.co.y, 1, 1/(2**9))
-                                down = in_tolerance(vert.co.y, 0, 1/(2**9))
+                                print('edges', edges)
 
-                                if left:
-                                    sort_val = vert.co.y
-                                    append_value_to_dict(edges, 0, (sort_val, vert))
-                                if right:
-                                    sort_val = vert.co.y
-                                    append_value_to_dict(edges, 1, (sort_val, vert))
-                                if up:
-                                    sort_val = vert.co.x
-                                    append_value_to_dict(edges, 2, (sort_val, vert))
-                                if down:
-                                    sort_val = vert.co.x
-                                    append_value_to_dict(edges, 3, (sort_val, vert))
+                                for edge in edges.values():
+                                    edge.sort(key=lambda x: x[0])
 
-                            print('edges', edges)
-
-                            for edge in edges.values():
-                                edge.sort(key=lambda x: x[0])
-
-                                for pair in itertools.pairwise(edge):
-                                    vert_1 = pair[0][1]
-                                    vert_2 = pair[1][1]
-                                    output_bmesh.edges.new(
-                                        (vert_1, vert_2)
-                                    )
+                                    for pair in itertools.pairwise(edge):
+                                        vert_1 = pair[0][1]
+                                        vert_2 = pair[1][1]
+                                        output_bmesh.edges.new(
+                                            (vert_1, vert_2)
+                                        )
 
                             print("finished meshing")
 
@@ -2272,37 +2302,38 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
             output_mesh = output_object.data
             output_bmesh.to_mesh(output_mesh)
 
-            view_layer = bpy.context.view_layer
+            if show_curvature_lines:
+                view_layer = bpy.context.view_layer
 
-            bpy.ops.object.mode_set(mode='OBJECT')
+                bpy.ops.object.mode_set(mode='OBJECT')
 
-            old_active = view_layer.objects.active
+                old_active = view_layer.objects.active
 
-            bpy.ops.object.select_all(action='DESELECT')
+                bpy.ops.object.select_all(action='DESELECT')
 
-            view_layer.objects.active = output_object
+                view_layer.objects.active = output_object
 
-            bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.object.mode_set(mode='EDIT')
 
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.mesh.edge_face_add()
-            bpy.ops.mesh.select_all(action='DESELECT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.edge_face_add()
+                bpy.ops.mesh.select_all(action='DESELECT')
 
-            bpy.ops.object.mode_set(mode='OBJECT')
+                bpy.ops.object.mode_set(mode='OBJECT')
 
-            view_layer.objects.active = old_active
+                view_layer.objects.active = old_active
 
-            uv_layer = output_mesh.uv_layers.active
-            if uv_layer is None:
-                uv_layer = output_mesh.uv_layers.new()
+                uv_layer = output_mesh.uv_layers.active
+                if uv_layer is None:
+                    uv_layer = output_mesh.uv_layers.new()
 
-            uv_layer = uv_layer.data
+                uv_layer = uv_layer.data
 
-            for poly in output_mesh.polygons:
-                for loop_index in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                    vertex = output_mesh.vertices[output_mesh.loops[loop_index].vertex_index]
-                    coordinate = vertex.co
-                    uv_layer[loop_index].uv = (coordinate.x, coordinate.y)
+                for poly in output_mesh.polygons:
+                    for loop_index in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                        vertex = output_mesh.vertices[output_mesh.loops[loop_index].vertex_index]
+                        coordinate = vertex.co
+                        uv_layer[loop_index].uv = (coordinate.x, coordinate.y)
 
             # for vertex in output_mesh.vertices:
             #     vertex.co = math_extensions.bezier_surface_at_parameters(
@@ -2463,7 +2494,8 @@ def create_and_replace_output_mesh(control_mesh: bpy.types.Mesh, output_object: 
             output_mesh = output_object.data
             output_bmesh.to_mesh(output_mesh)
 
-    if True:
+    # Apply Bézier function
+    if False:
         output_bmesh = bmesh.new()
         output_bmesh.from_mesh(output_object.data)
 
